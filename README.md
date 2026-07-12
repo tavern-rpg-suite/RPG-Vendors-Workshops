@@ -4,7 +4,7 @@ A SillyTavern extension that fills your world with **vendors, crafters and train
 
 > Part of the RPG suite. It plugs into the **Inventory** (`window.RPG.inventory` / `window.RPG.quest`), **Equipment** (`window.RPG.equipment`), **Vitals** (`window.RPG.vitals`) and **Map** (`window.RPG.map`) modules when they're present, and works with whatever subset you have installed.
 
-**Version 1.33.1**
+**Version 1.34.0**
 
 ---
 
@@ -78,10 +78,11 @@ Bilingual (RU / EN); all state saved per chat.
 
 ## 🩺 Troubleshooting
 
-- **The "Generate" button in the vendor form did nothing.** Fixed in 1.33.1 — it was still reading the form through the old `rpg-vnd-f-*` selectors after the markup moved to `vnf-*` / `#vf-*`, so `.val()` returned `undefined` and `.trim()` threw before the request was ever sent (silently, outside the try block).
-- **The bench kept dropping back to Freestyle / a recipe wouldn't set up.** Fixed in 1.33.0 — `ensureIngredients()` was called but never defined, so opening the workbench threw and wiped the selected recipe's slots every single time.
-- **"Missing: …" even though the ingredient is in the backpack.** Fixed in 1.33.0 — ingredient names are matched tolerantly (normalised + stemmed + order-independent), so "серный сплав" now satisfies a recipe asking for "сплав серы". This applies to the slots, the green/red chips, the craft check and the foraging hunt alike.
-- **Vendors/quests bled between chats.** Fixed in 1.33.0 — the vendor state is owned by one chat and is never written into another while SillyTavern is switching.
+- **Vendors are lost when a solo chat is converted to a group.** Fixed in 1.34.0. Vendors are now backed up inside the chat itself (`rpg_vendors_checkpoint` on the last message), the same way the Engine backs up the backpack, so the copied messages carry the shop into the group chat. For chats converted before this release the vendor list offers a **"Carry vendors over from another chat"** picker, which copies the vendors and their quests across.
+- **The "Generate" button in the vendor form does nothing.** Fixed in 1.33.1. It read the form through outdated `rpg-vnd-f-*` selectors after the markup had moved to `vnf-*` / `#vf-*`, so the lookups returned nothing and the handler threw before any request was sent.
+- **The bench falls back to Freestyle and recipe slots are not built.** Fixed in 1.33.0. `ensureIngredients()` was called but never defined, so opening the workbench threw and reset the selected recipe.
+- **A recipe reports a missing ingredient that is present in the backpack.** Fixed in 1.33.0. Ingredient names are matched through a normalised, stemmed, order-independent key (`sulfur alloy` satisfies `alloy of sulfur`). This applies to the bench slots, the availability chips, the craft check and the foraging hunt.
+- **Vendors and quests leak between chats.** Fixed in 1.33.0. Vendor state is owned by a single chat and is not written into another while SillyTavern is switching.
 
 - **The Craft tab was blank.** Fixed in 1.27.1 — each column renders independently, so one hiccup can't blank the tab (details land in the console).
 - **The extension icon/settings vanished after an update.** Fixed in 1.29.1 — a duplicate function broke module load; the build is now validated as an ES module.

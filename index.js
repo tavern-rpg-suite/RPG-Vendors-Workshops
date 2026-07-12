@@ -1,5 +1,5 @@
 import { getContext, extension_settings } from '../../../extensions.js';
-import { eventSource, event_types, saveSettingsDebounced, setExtensionPrompt, extension_prompt_roles, characters } from '../../../../script.js';
+import { eventSource, event_types, saveChatDebounced, saveSettingsDebounced, setExtensionPrompt, extension_prompt_roles, characters } from '../../../../script.js';
 
 const MODULE_NAME = 'rpg_vendors';
 const PROMPT_KEY = 'rpg_vendor_injection';
@@ -102,6 +102,12 @@ const I18N = {
         toast_rejected: '{vendor}: {reason}',
         toast_repair_err: 'The vendor could not be reached — check URL / key / model.',
         toast_vendor_saved: 'Vendor saved.', toast_vendor_deleted: 'Vendor removed.',
+        toast_vnd_restored: 'Vendors restored from the chat backup!',
+        carry_lbl: 'Carry vendors over from another chat:',
+        carry_btn: 'Carry over',
+        carry_done: 'Carried over {n} vendor(s).',
+        carry_err: 'That chat has no vendors any more.',
+        carry_opt: '{id} — {n} vendor(s)',
         toast_gen: 'Conjuring a fitting vendor from the lore...', toast_gen_done: 'Vendor created!',
         toast_gen_err: 'Could not generate a vendor — check URL / key / model.',
         toast_need_name: 'Enter a vendor name.',
@@ -171,6 +177,12 @@ const I18N = {
         toast_rejected: '{vendor}: {reason}',
         toast_repair_err: 'Не удалось связаться с вендором — проверь URL / ключ / модель.',
         toast_vendor_saved: 'Вендор сохранён.', toast_vendor_deleted: 'Вендор удалён.',
+        toast_vnd_restored: 'Поставщики восстановлены из резервной копии чата!',
+        carry_lbl: 'Перенести поставщиков из другого чата:',
+        carry_btn: 'Перенести',
+        carry_done: 'Перенесено поставщиков: {n}.',
+        carry_err: 'В том чате больше нет поставщиков.',
+        carry_opt: '{id} — поставщиков: {n}',
         toast_gen: 'Призываю подходящего вендора из лора...', toast_gen_done: 'Вендор создан!',
         toast_gen_err: 'Не удалось сгенерировать вендора — проверь URL / ключ / модель.',
         toast_need_name: 'Введите имя вендора.',
@@ -200,47 +212,105 @@ function saveSettings() {
 
 function freshState() { return { vendors: [], activeVendorId: null, quests: [] }; }
 
-// ---- chat ownership: this state belongs to ONE chat and must never be written into another ----
+// ---- chat ownership: this state belongs to one chat and is never written into another ----
 let currentChatId = null;   // chat the in-memory `state` belongs to
-let pendingChatId = null;   // id handed to us by CHAT_CHANGED, before we (re)load
-let stateReady = false;     // false while switching chats — saving is blocked
+let pendingChatId = null;   // id reported by CHAT_CHANGED, before the state is (re)loaded
+let stateReady = false;     // false while switching chats; saving is blocked
 
 function loadState(explicitId) {
     const chatId = explicitId || pendingChatId || getContext().chatId;
     if (!chatId) { currentChatId = null; pendingChatId = null; stateReady = false; state = freshState(); return; }
     currentChatId = chatId; pendingChatId = null; stateReady = true;
-    if (settings.chatStates[chatId]) {
+    if (settings.chatStates[chatId] && Array.isArray(settings.chatStates[chatId].vendors)) {
         state = settings.chatStates[chatId];
-        if (!Array.isArray(state.vendors)) state.vendors = [];
         if (!('activeVendorId' in state)) state.activeVendorId = null;
         if (!Array.isArray(state.quests)) state.quests = [];
     } else {
-        state = freshState();
+        // Restore the shop from the backup kept inside the chat. This is what carries vendors over
+        // when a solo chat is converted to a group: the group gets a new chat id, so chatStates has
+        // no entry for it, but the copied messages still carry the backup.
+        // A chat holding only the greeting is a copy of nothing and is never restored into.
+        const prevFlags = settings.chatStates[chatId] || {};   // e.g. brokenDropped, set before load
+        const chat = getContext().chat;
+        let restored = false;
+        if (chat && chat.length > 1) {
+            for (let i = chat.length - 1; i >= 0; i--) {
+                const cp = chat[i].extra && chat[i].extra.rpg_vendors_checkpoint;
+                if (cp && Array.isArray(cp.vendors) && cp.vendors.length) {
+                    state = cloneState(cp);                    // copy: never share objects with the chat file
+                    state.activeVendorId = null;               // new scene: no vendor is present yet
+                    state.presentVendorId = null;
+                    if (!Array.isArray(state.quests)) state.quests = [];
+                    restored = true;
+                    break;
+                }
+            }
+        }
+        if (!restored) state = freshState();
+        Object.keys(prevFlags).forEach(k => { if (!(k in state)) state[k] = prevFlags[k]; });
         settings.chatStates[chatId] = state;
+        if (restored) { saveSettings(); toastr.success(t('toast_vnd_restored')); }
     }
 }
+function cloneState(s) { try { return JSON.parse(JSON.stringify(s)); } catch (e) { return freshState(); } }
 function saveState() {
-    if (!stateReady || !currentChatId) return;                              // mid-switch: write nowhere
-    const ctxId = getContext().chatId;
-    if (ctxId && ctxId !== currentChatId) return;                           // ST already moved on
+    if (!stateReady || !currentChatId) return;                 // mid-switch: do not write
+    const ctx = getContext();
+    if (ctx.chatId && ctx.chatId !== currentChatId) return;    // state belongs to a chat we left
     settings.chatStates[currentChatId] = state;
     saveSettings();
+
+    // Backup inside the chat itself, as a copy. This is what survives a group conversion.
+    try {
+        const chat = ctx.chat;
+        if (chat && chat.length > 0 && Array.isArray(state.vendors) && state.vendors.length) {
+            const lastMsg = chat[chat.length - 1];
+            if (!lastMsg.extra) lastMsg.extra = {};
+            lastMsg.extra.rpg_vendors_checkpoint = cloneState(state);
+            saveChatDebounced();
+        }
+    } catch (e) { console.error('[Vendors] checkpoint save failed:', e); }
 }
-// make sure we hold the current chat's vendors before touching them
+
+// Chats other than the active one that still hold vendors; used by the carry-over control.
+function chatsWithVendors() {
+    const out = [];
+    const all = settings.chatStates || {};
+    Object.keys(all).forEach(id => {
+        if (id === currentChatId) return;
+        const st = all[id];
+        if (st && Array.isArray(st.vendors) && st.vendors.length) out.push({ id, n: st.vendors.length });
+    });
+    return out.reverse();
+}
+function importVendorsFrom(srcId) {
+    const src = (settings.chatStates || {})[srcId];
+    if (!src || !Array.isArray(src.vendors) || !src.vendors.length) { toastr.error(t('carry_err')); return; }
+    if (!stateReady || !currentChatId) return;
+    const copy = cloneState(src);
+    state.vendors = copy.vendors;
+    state.quests = Array.isArray(copy.quests) ? copy.quests : [];
+    state.activeVendorId = null;
+    state.presentVendorId = null;
+    saveState(); buildInjection(); buildCardInjection(); restoreVendorButtons();
+    vi = 0; view = 'list'; renderPanel();
+    toastr.success(t('carry_done', { n: state.vendors.length }));
+}
+// Ensure the state for the active chat is loaded before it is touched.
 function syncChat() {
     const id = pendingChatId || getContext().chatId;
     if (!id) return;
     if (!stateReady || id !== currentChatId) loadState(id);
 }
-// still on the chat an async job started in?
+// True while the loaded state still belongs to the active chat. Guards async work.
 function ownsChat(id) { return !!(stateReady && id && currentChatId === id && getContext().chatId === id); }
 
 // ============================================================
-// TOLERANT INGREDIENT NAME MATCHING  (mirrors Tavern RPG Engine)
-// The model spells the same thing differently every time: a recipe wants "сплав серы",
-// the loupe drops "серный сплав", and a literal compare then refuses the craft.
-// We compare a normalised, stemmed, order-independent key instead.
-// Falls back to its own copy if the engine is older / absent.
+// INGREDIENT NAME MATCHING  (mirrors Tavern RPG Engine)
+// Generated item names vary in wording and inflection ("sulfur alloy" / "alloy of sulfur"),
+// so a literal comparison rejects ingredients the player actually holds. Names are compared
+// through a normalised, stemmed, order-independent key instead.
+// Falls back to a local copy when the engine is absent or older.
 // ============================================================
 const ING_STOP = new Set([
     'of', 'the', 'a', 'an', 'and', 'with', 'from', 'for',
@@ -275,13 +345,13 @@ function ingKeyLocal(name) {
     if (!words.length) return String(name || '').trim().toLowerCase();
     return words.sort().join('|');
 }
-// prefer the engine's matcher when present, so both modules always agree
+// Prefer the engine's matcher when present, so both modules apply identical rules.
 function ingKey(name) {
     try { if (window.RPG && window.RPG.match && typeof window.RPG.match.key === 'function') return window.RPG.match.key(name); } catch (e) {}
     return ingKeyLocal(name);
 }
 function sameIng(a, b) { return !!a && !!b && ingKey(a) === ingKey(b); }
-// vendors keep a catalogue of ingredient info; make sure the array exists (was missing → threw on every bench open)
+// Vendors keep a catalogue of ingredient info; make sure the array exists before it is read.
 function ensureIngredients(v) { if (!Array.isArray(v.ingredients)) v.ingredients = []; return v.ingredients; }
 
 async function callAI(systemPrompt, userPrompt, tempOverride) {
@@ -349,9 +419,7 @@ function vendorPersona(vendor) {
     return String(desc).substring(0, 700);
 }
 async function generateVendorDesc(body) {
-    // NB: these must match what formStage() actually renders (vnf-* / #vf-*). They were still
-    // pointing at the old rpg-vnd-f-* names, so `.val()` came back undefined, `.trim()` threw
-    // before the try block, and the button silently did nothing at all.
+    // Selectors must match what formStage() renders (vnf-* / #vf-*).
     const type = body.find('.vnf-f-type').val() || 'other';
     const customType = (body.find('#vf-ctype').val() || '').trim();
     const customDomain = (body.find('#vf-cdom').val() || '').trim();
@@ -427,7 +495,7 @@ Invent a fitting name (it can be a person or a shop) and a one-sentence descript
 Write the name and description strictly in ${genLang()}.
 Output strictly JSON: {"type":"blacksmith","name":"","desc":""}`;
         const res = await callAI(sys, settingContext());
-        if (!ownsChat(myChat)) return;   // chat switched while the model was thinking
+        if (!ownsChat(myChat)) return;   // chat changed during the request
         const type = forced || (VENDOR_TYPES.includes(res.type) ? res.type : 'other');
         const v = { id: genId(), type: type, name: String(res.name || 'Vendor'), desc: String(res.desc || ''), charName: '' };
         state.vendors.push(v); saveState();
@@ -1108,7 +1176,7 @@ function craftRecipe(v, id) {
     const inv = invApi(); if (!inv) { toastr.warning(t('no_inv_shop')); return; }
     const r = (v.recipes || []).find(x => x.id === id); if (!r) return;
     const bag = inv.list();
-    // match on the tolerant key, not the literal string — "серный сплав" must satisfy "сплав серы"
+    // Match on the normalised key rather than the literal string.
     const byKey = {}; bag.forEach(it => { const k = ingKey(it.name); (byKey[k] = byKey[k] || []).push(it.id); });
     const need = {}, label = {};
     (r.ingredients || []).forEach(n => { const k = ingKey(n); need[k] = (need[k] || 0) + 1; label[k] = n; });
@@ -1844,7 +1912,17 @@ function indexStage() {
         <select class="vnf-sel" id="v-autotype"><option value="auto">${escapeHtml(t('auto_ai'))}</option>${typeOptions('')}</select>
         <button class="vnf-btn b-violet" id="v-auto">${ic('wand')}${escapeHtml(t('auto'))}</button>
     </div>`;
-    if (n === 0) return `<div class="vnf-view">${top}<div class="vnf-emptybig">${escapeHtml(t('no_vendors'))}</div></div>`;
+    if (n === 0) {
+        // If another chat (e.g. the solo chat a group was converted from) still holds vendors,
+        // offer to carry them over rather than recreating them by hand.
+        const src = chatsWithVendors();
+        const carry = src.length ? `<div class="vnf-idxtop" style="margin-top:10px">
+            <span class="vnf-flbl" style="flex:1 1 100%">${escapeHtml(t('carry_lbl'))}</span>
+            <select class="vnf-sel" id="v-carrysrc">${src.map(c => `<option value="${escapeHtml(c.id)}">${escapeHtml(t('carry_opt', { id: c.id, n: c.n }))}</option>`).join('')}</select>
+            <button class="vnf-btn b-paper" id="v-carry">${ic('file')}${escapeHtml(t('carry_btn'))}</button>
+        </div>` : '';
+        return `<div class="vnf-view">${top}<div class="vnf-emptybig">${escapeHtml(t('no_vendors'))}</div>${carry}</div>`;
+    }
     return `<div class="vnf-view">${top}<div class="vnf-rolo" id="v-rolo">${roloInner()}</div></div>`;
 }
 function roloInner() {
@@ -1872,6 +1950,7 @@ function roloInner() {
 function wireIndex(body) {
     body.find('#v-create').off('click').on('click', () => { formVendor = null; view = 'form'; renderPanel(); });
     body.find('#v-auto').off('click').on('click', () => autoGenerateVendor(body.find('#v-autotype').val()));
+    body.find('#v-carry').off('click').on('click', () => { const src = body.find('#v-carrysrc').val(); if (src) importVendorsFrom(src); });
     wireRolo(body);
 }
 function wireRolo(body) {
@@ -2252,7 +2331,7 @@ async function maybeDropBrokenGear() {
         const pick = kinds[Math.floor(Math.random() * kinds.length)];
         const sys = `Invent ONE ${pick[1]} the character stumbles on at the start of a scene, fitting the WORLD/ERA/setting below. Give a short "name" and a one-line "desc". Write in ${genLang()}. Output JSON: {"name":"","desc":""}`;
         const res = await callAI(sys, settingContext());
-        if (!ownsChat(myChat)) return;          // chat switched while the model was thinking
+        if (!ownsChat(myChat)) return;          // chat changed during the request
         const name = String((res && res.name) || 'Broken item').slice(0, 50);
         const desc = String((res && res.desc) || '').slice(0, 120);
         inv.add({ name, desc, type: pick[0], dur: 0, max: 100, broken: true, grade: (Math.random() < 0.15 ? 3 : (Math.random() < 0.4 ? 2 : 1)) });
