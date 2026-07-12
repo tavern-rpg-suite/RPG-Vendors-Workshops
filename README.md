@@ -4,7 +4,7 @@ A SillyTavern extension that fills your world with **vendors, crafters and train
 
 > Part of the RPG suite. It plugs into the **Inventory** (`window.RPG.inventory` / `window.RPG.quest`), **Equipment** (`window.RPG.equipment`), **Vitals** (`window.RPG.vitals`) and **Map** (`window.RPG.map`) modules when they're present, and works with whatever subset you have installed.
 
-**Version 1.32.0**
+**Version 1.33.1**
 
 ---
 
@@ -77,6 +77,11 @@ Anything missing is simply skipped — the module degrades gracefully.
 Bilingual (RU / EN); all state saved per chat.
 
 ## 🩺 Troubleshooting
+
+- **The "Generate" button in the vendor form did nothing.** Fixed in 1.33.1 — it was still reading the form through the old `rpg-vnd-f-*` selectors after the markup moved to `vnf-*` / `#vf-*`, so `.val()` returned `undefined` and `.trim()` threw before the request was ever sent (silently, outside the try block).
+- **The bench kept dropping back to Freestyle / a recipe wouldn't set up.** Fixed in 1.33.0 — `ensureIngredients()` was called but never defined, so opening the workbench threw and wiped the selected recipe's slots every single time.
+- **"Missing: …" even though the ingredient is in the backpack.** Fixed in 1.33.0 — ingredient names are matched tolerantly (normalised + stemmed + order-independent), so "серный сплав" now satisfies a recipe asking for "сплав серы". This applies to the slots, the green/red chips, the craft check and the foraging hunt alike.
+- **Vendors/quests bled between chats.** Fixed in 1.33.0 — the vendor state is owned by one chat and is never written into another while SillyTavern is switching.
 
 - **The Craft tab was blank.** Fixed in 1.27.1 — each column renders independently, so one hiccup can't blank the tab (details land in the console).
 - **The extension icon/settings vanished after an update.** Fixed in 1.29.1 — a duplicate function broke module load; the build is now validated as an ES module.

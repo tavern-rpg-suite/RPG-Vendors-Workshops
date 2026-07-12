@@ -199,9 +199,16 @@ function saveSettings() {
 }
 
 function freshState() { return { vendors: [], activeVendorId: null, quests: [] }; }
-function loadState() {
-    const chatId = getContext().chatId;
-    if (!chatId) { state = freshState(); return; }
+
+// ---- chat ownership: this state belongs to ONE chat and must never be written into another ----
+let currentChatId = null;   // chat the in-memory `state` belongs to
+let pendingChatId = null;   // id handed to us by CHAT_CHANGED, before we (re)load
+let stateReady = false;     // false while switching chats — saving is blocked
+
+function loadState(explicitId) {
+    const chatId = explicitId || pendingChatId || getContext().chatId;
+    if (!chatId) { currentChatId = null; pendingChatId = null; stateReady = false; state = freshState(); return; }
+    currentChatId = chatId; pendingChatId = null; stateReady = true;
     if (settings.chatStates[chatId]) {
         state = settings.chatStates[chatId];
         if (!Array.isArray(state.vendors)) state.vendors = [];
@@ -213,10 +220,69 @@ function loadState() {
     }
 }
 function saveState() {
-    const chatId = getContext().chatId;
-    if (chatId) settings.chatStates[chatId] = state;
+    if (!stateReady || !currentChatId) return;                              // mid-switch: write nowhere
+    const ctxId = getContext().chatId;
+    if (ctxId && ctxId !== currentChatId) return;                           // ST already moved on
+    settings.chatStates[currentChatId] = state;
     saveSettings();
 }
+// make sure we hold the current chat's vendors before touching them
+function syncChat() {
+    const id = pendingChatId || getContext().chatId;
+    if (!id) return;
+    if (!stateReady || id !== currentChatId) loadState(id);
+}
+// still on the chat an async job started in?
+function ownsChat(id) { return !!(stateReady && id && currentChatId === id && getContext().chatId === id); }
+
+// ============================================================
+// TOLERANT INGREDIENT NAME MATCHING  (mirrors Tavern RPG Engine)
+// The model spells the same thing differently every time: a recipe wants "сплав серы",
+// the loupe drops "серный сплав", and a literal compare then refuses the craft.
+// We compare a normalised, stemmed, order-independent key instead.
+// Falls back to its own copy if the engine is older / absent.
+// ============================================================
+const ING_STOP = new Set([
+    'of', 'the', 'a', 'an', 'and', 'with', 'from', 'for',
+    'из', 'для', 'и', 'с', 'со', 'на', 'в', 'от',
+    'кусок', 'кусочек', 'обломок', 'осколок', 'щепотка', 'горсть', 'немного', 'штука', 'порция', 'пучок',
+    'piece', 'chunk', 'bit', 'pinch', 'handful', 'portion', 'bunch', 'lump'
+]);
+const ING_GRAM = ['ического', 'ическая', 'ически', 'ами', 'ями', 'ого', 'ему', 'ому', 'ыми', 'ими', 'ies', 'ах', 'ях', 'ов', 'ев', 'ей', 'ой', 'ый', 'ий', 'ая', 'яя', 'ое', 'ее', 'ые', 'ие', 'ым', 'им', 'ых', 'их', 'ом', 'ем', 'ую', 'юю', 'ся', 'es', 'а', 'я', 'ы', 'и', 'у', 'ю', 'е', 'о', 'ь', 'й', 's'];
+const ING_DERIV = ['ическ', 'енн', 'инн', 'ян', 'ан', 'ск', 'ов', 'ев', 'н'];
+function ingCut(w, list) {
+    for (const sfx of list) if (w.length - sfx.length >= 3 && w.endsWith(sfx)) return w.slice(0, -sfx.length);
+    return w;
+}
+function ingStem(w) {
+    if (w.length <= 3) return w;
+    let x = ingCut(w, ING_GRAM);
+    x = ingCut(x, ING_DERIV);
+    x = ingCut(x, ING_GRAM);
+    return x;
+}
+function ingKeyLocal(name) {
+    const words = String(name || '')
+        .toLowerCase()
+        .replace(/ё/g, 'е')
+        .replace(/\(.*?\)/g, ' ')
+        .replace(/[^\p{L}\p{N}]+/gu, ' ')
+        .trim()
+        .split(/\s+/)
+        .filter(w => w && !ING_STOP.has(w))
+        .map(ingStem)
+        .filter(Boolean);
+    if (!words.length) return String(name || '').trim().toLowerCase();
+    return words.sort().join('|');
+}
+// prefer the engine's matcher when present, so both modules always agree
+function ingKey(name) {
+    try { if (window.RPG && window.RPG.match && typeof window.RPG.match.key === 'function') return window.RPG.match.key(name); } catch (e) {}
+    return ingKeyLocal(name);
+}
+function sameIng(a, b) { return !!a && !!b && ingKey(a) === ingKey(b); }
+// vendors keep a catalogue of ingredient info; make sure the array exists (was missing → threw on every bench open)
+function ensureIngredients(v) { if (!Array.isArray(v.ingredients)) v.ingredients = []; return v.ingredients; }
 
 async function callAI(systemPrompt, userPrompt, tempOverride) {
     if (!settings.apiKey) throw new Error('API key is not set');
@@ -283,11 +349,14 @@ function vendorPersona(vendor) {
     return String(desc).substring(0, 700);
 }
 async function generateVendorDesc(body) {
-    const type = body.find('.rpg-vnd-f-type').val();
-    const customType = body.find('.rpg-vnd-f-customtype').val().trim();
-    const customDomain = body.find('.rpg-vnd-f-customdomain').val().trim();
-    const charName = body.find('.rpg-vnd-f-card').val();
-    const name = body.find('.rpg-vnd-f-name').val().trim() || charName || '';
+    // NB: these must match what formStage() actually renders (vnf-* / #vf-*). They were still
+    // pointing at the old rpg-vnd-f-* names, so `.val()` came back undefined, `.trim()` threw
+    // before the try block, and the button silently did nothing at all.
+    const type = body.find('.vnf-f-type').val() || 'other';
+    const customType = (body.find('#vf-ctype').val() || '').trim();
+    const customDomain = (body.find('#vf-cdom').val() || '').trim();
+    const charName = body.find('.vnf-f-card').val() || '';
+    const name = (body.find('#vf-name').val() || '').trim() || charName || '';
     const lore = cardLoreByName(charName);
     const role = (type === 'other' && customType) ? customType : typeLabel(type);
     const domain = customDomain || (type === 'other' ? (customType ? ('the trade of a ' + customType) : 'their own trade') : domainOf(type));
@@ -305,7 +374,7 @@ Output strictly JSON: {"desc":""}`;
             const res2 = await callAI(sys, settingContext(), Math.min(1.1, (typeof settings.temperature === 'number' ? settings.temperature : 0.7) + 0.2));
             desc = res2 && (res2.desc || res2.description || (typeof res2 === 'string' ? res2 : ''));
         }
-        if (desc && String(desc).trim()) { body.find('.rpg-vnd-f-desc').val(String(desc).trim()); toastr.success(t('desc_gen_done')); }
+        if (desc && String(desc).trim()) { body.find('.vnf-f-desc').val(String(desc).trim()).trigger('input'); toastr.success(t('desc_gen_done')); }
         else toastr.error(t('desc_gen_err'));
     } catch (e) { console.error('[Vendors] desc gen failed:', e); toastr.error(t('desc_gen_err')); }
 }
@@ -343,6 +412,7 @@ function deleteVendor(id) {
 }
 async function autoGenerateVendor(forcedType) {
     const forced = (forcedType && forcedType !== 'auto' && VENDOR_TYPES.includes(forcedType) && forcedType !== 'other') ? forcedType : '';
+    const myChat = currentChatId;
     toastr.info(t('toast_gen'));
     try {
         const sys = forced
@@ -357,6 +427,7 @@ Invent a fitting name (it can be a person or a shop) and a one-sentence descript
 Write the name and description strictly in ${genLang()}.
 Output strictly JSON: {"type":"blacksmith","name":"","desc":""}`;
         const res = await callAI(sys, settingContext());
+        if (!ownsChat(myChat)) return;   // chat switched while the model was thinking
         const type = forced || (VENDOR_TYPES.includes(res.type) ? res.type : 'other');
         const v = { id: genId(), type: type, name: String(res.name || 'Vendor'), desc: String(res.desc || ''), charName: '' };
         state.vendors.push(v); saveState();
@@ -687,7 +758,9 @@ Invent a short SKILL NAME for your craft (1-2 words, e.g. Cooking, Smithing, Alc
 Each recipe has: "name" (the crafted item), "stars" (1-5; 5 = rare and powerful), "ingredients" (an array of 3 to 8 ingredient names — more and rarer for higher stars), "flavor" (one tempting sentence describing the FINISHED item as if on a menu or a shop label — do NOT list ingredients here), "result" (one short line on what the crafted item does: a buff, attack power, healing, etc.), "price" (coins to LEARN the recipe — a 1★ recipe about 15, a 5★ recipe 150+, scaled by stars), and "effect" — what the item mechanically DOES when eaten, drunk or worn: {"food":0-40 (satiety, only for edibles),"heal":0-60 (HP restored, for food/potions),"buff":{"name":"","effect":"","duration":turns}}. Include only the parts that fit the item (food/potion → food/heal and/or a buff; weapon/armour/clothing/accessory → a "buff" bonus granted WHILE WORN, duration omitted). 5★ items must be genuinely strong.
 Match the WORLD, ERA and technology of the setting; no anachronisms. Write the skill name, recipe names, flavor, ingredients and results strictly in ${genLang()}.
 Output strictly JSON: {"skill":"","recipes":[{"name":"","stars":1,"ingredients":["",""],"flavor":"","result":"","price":15,"effect":{"food":0,"heal":0,"buff":{"name":"","effect":"","duration":3}}}]}`;
+        const myChat = currentChatId;
         const res = await callAI(sys, settingContext());
+        if (!ownsChat(myChat)) return;
         if (res.skill && !v.skill.userNamed) v.skill.name = String(res.skill).slice(0, 30);
         const recs = Array.isArray(res.recipes) ? res.recipes : [];
         const clampStars = x => Math.max(1, Math.min(5, parseInt(x) || 1));
@@ -815,14 +888,14 @@ function recipeIngredientNames(v) {
     const seen = new Map();
     (v.recipes || []).forEach(r => (r.ingredients || []).forEach(n => {
         const name = String(n || '').trim(); if (!name) return;
-        const k = name.toLowerCase(); if (!seen.has(k)) seen.set(k, name);
+        const k = ingKey(name); if (!seen.has(k)) seen.set(k, name);
     }));
     return [...seen.values()];
 }
 // look up the catalogued "where" (and real room) for an ingredient name
 function ingredientInfo(v, name) {
-    const k = String(name || '').toLowerCase();
-    return (v.ingredients || []).find(g => String(g.name).toLowerCase() === k) || null;
+    const k = ingKey(name);
+    return (v.ingredients || []).find(g => ingKey(g.name) === k) || null;
 }
 
 function questApi() { return (window.RPG && window.RPG.quest && window.RPG.quest.available) ? window.RPG.quest : null; }
@@ -886,17 +959,19 @@ async function takeForageQuest(v) {
     const learned = (v.recipes || []).filter(r => r.learned);
     if (!learned.length) { toastr.warning(t('forage_need_recipe')); return; }
     const need = new Map();
-    learned.forEach(r => (r.ingredients || []).forEach(n => { const nm = String(n || '').trim(); if (nm) need.set(nm.toLowerCase(), nm); }));
-    const have = new Set((inv ? inv.list() : []).map(i => String(i.name).toLowerCase()));
-    const hunting = new Set((q.neededNames ? q.neededNames() : []).map(n => String(n).toLowerCase()));
+    learned.forEach(r => (r.ingredients || []).forEach(n => { const nm = String(n || '').trim(); if (nm) need.set(ingKey(nm), nm); }));
+    const have = new Set((inv ? inv.list() : []).map(i => ingKey(i.name)));
+    const hunting = new Set((q.neededNames ? q.neededNames() : []).map(ingKey));
     const missing = [...need.keys()].filter(k => !have.has(k) && !hunting.has(k)).map(k => need.get(k));
     if (!missing.length) { toastr.info(t('forage_none_missing')); return; }
     toastr.info(t('forage_run'));
+    const myChat = currentChatId;
     try {
         const info = await assignIngredientInfo(v, missing);
+        if (!ownsChat(myChat)) return;
         // keep the BUY path alive too — stock a few (kept small on purpose, not a spam list)
         if (!Array.isArray(v.stock)) v.stock = [];
-        info.slice(0, 3).forEach(ing => { if (!v.stock.some(sx => String(sx.name).toLowerCase() === ing.name.toLowerCase())) v.stock.push({ id: genId(), name: ing.name, type: 'material', desc: ing.desc, price: Math.max(2, Math.floor(Math.random() * 8) + 3) }); });
+        info.slice(0, 3).forEach(ing => { if (!v.stock.some(sx => sameIng(sx.name, ing.name))) v.stock.push({ id: genId(), name: ing.name, type: 'material', desc: ing.desc, price: Math.max(2, Math.floor(Math.random() * 8) + 3) }); });
         v.ingredients = info; // remember where-hints on the vendor for the panel
         const res = q.addForage({ vendorName: v.name, skill: v.skill.name, chance: forageChance(v.skill.level), ingredients: info });
         saveState(); afterCraftChange();
@@ -1033,10 +1108,12 @@ function craftRecipe(v, id) {
     const inv = invApi(); if (!inv) { toastr.warning(t('no_inv_shop')); return; }
     const r = (v.recipes || []).find(x => x.id === id); if (!r) return;
     const bag = inv.list();
-    const byName = {}; bag.forEach(it => { const k = String(it.name).toLowerCase(); (byName[k] = byName[k] || []).push(it.id); });
-    const need = {}; (r.ingredients || []).forEach(n => { const k = String(n).toLowerCase(); need[k] = (need[k] || 0) + 1; });
+    // match on the tolerant key, not the literal string — "серный сплав" must satisfy "сплав серы"
+    const byKey = {}; bag.forEach(it => { const k = ingKey(it.name); (byKey[k] = byKey[k] || []).push(it.id); });
+    const need = {}, label = {};
+    (r.ingredients || []).forEach(n => { const k = ingKey(n); need[k] = (need[k] || 0) + 1; label[k] = n; });
     const missing = [], useIds = [];
-    for (const k in need) { const have = (byName[k] || []).length; if (have < need[k]) missing.push(k); else useIds.push(...byName[k].slice(0, need[k])); }
+    for (const k in need) { const have = (byKey[k] || []).length; if (have < need[k]) missing.push(label[k] || k); else useIds.push(...byKey[k].slice(0, need[k])); }
     if (missing.length) { toastr.warning(t('craft_need', { list: missing.join(', ') })); return; }
     showMiniGame(v.skill.level, (q) => {
         useIds.forEach(x => inv.remove(x));
@@ -1384,9 +1461,9 @@ function cbRenderRecipes(v) {
     const recs = v.recipes || [];
     // how many of each material the player is carrying — so recipe ingredients show green (have) / red (missing)
     const inv = invApi(); const bagCount = {};
-    if (inv) inv.list().forEach(i => { const k = String(i.name).toLowerCase(); bagCount[k] = (bagCount[k] || 0) + 1; });
+    if (inv) inv.list().forEach(i => { const k = ingKey(i.name); bagCount[k] = (bagCount[k] || 0) + 1; });
     const chip = (n, known) => {
-        const has = (bagCount[String(n).toLowerCase()] || 0) > 0;
+        const has = (bagCount[ingKey(n)] || 0) > 0;
         const cls = known ? (has ? 'has' : 'miss') : '';
         return `<span class="ningr ${cls}">${cbIcon(ingIconKey(n))}<b>${escapeHtml(n)}</b></span>`;
     };
@@ -1473,14 +1550,14 @@ function cbRenderInv(v) {
     const inv = invApi(); const bag = inv ? inv.list() : [];
     const placed = new Set(benchSlots.map(s => s.itemId).filter(Boolean));
     const r = cbCurRecipe(v);
-    const needSet = new Set((r ? (r.ingredients || []) : []).map(x => String(x).toLowerCase()));
+    const needSet = new Set((r ? (r.ingredients || []) : []).map(ingKey));
     const agg = {};
     bag.forEach(m => { const k = m.name; if (!agg[k]) agg[k] = { name: m.name, desc: m.desc || '', ids: [], free: [] }; agg[k].ids.push(m.id); if (!placed.has(m.id)) agg[k].free.push(m.id); });
     const rows = Object.values(agg);
     if (!inv) box.innerHTML = `<div class="cb-empty">${escapeHtml(t('no_inv_shop'))}</div>`;
     else if (!rows.length) box.innerHTML = `<div class="cb-empty">${escapeHtml(t('no_materials'))}</div>`;
     else box.innerHTML = rows.map(a => {
-        const c = a.free.length; const isNeed = needSet.has(a.name.toLowerCase()) && benchSlots.some(s => !s.itemId && s.need && s.need.toLowerCase() === a.name.toLowerCase());
+        const c = a.free.length; const isNeed = needSet.has(ingKey(a.name)) && benchSlots.some(s => !s.itemId && s.need && sameIng(s.need, a.name));
         return `<div class="ing ${c <= 0 ? 'empty' : ''} ${isNeed && c > 0 ? 'match' : ''}" draggable="${c > 0 ? 'true' : 'false'}" data-id="${a.free[0] || a.ids[0]}"><div class="vial">${cbIcon(ingIconKey(a.name))}</div><div class="info"><div class="in">${escapeHtml(a.name)}</div><div class="ic">${escapeHtml(isNeed ? t('cb_needed') : (a.desc || t('cb_ingredient')))}</div></div><span class="cnt">×${c}</span></div>`;
     }).join('');
     // active foraging hunt — what to look for and where; the loupe turns these up while you search
@@ -1508,7 +1585,7 @@ function craftPlace(v, itemId) {
     const item = cbBag(v).find(b => b.id === itemId); if (!item) return;
     let slot;
     if (benchSel === 'free') slot = benchSlots.find(s => !s.itemId);
-    else slot = benchSlots.find(s => !s.itemId && s.need && s.need.toLowerCase() === item.name.toLowerCase());
+    else slot = benchSlots.find(s => !s.itemId && s.need && sameIng(s.need, item.name));
     if (!slot) return;
     slot.itemId = itemId; benchCrafted = ''; cbRenderBench(v); cbRenderInv(v);
 }
@@ -2161,7 +2238,9 @@ function setupUI() {
 async function maybeDropBrokenGear() {
     if (!settings.enabled) return;
     const inv = invApi(); if (!inv) return;
-    const ctx = getContext(); const chatId = ctx.chatId; if (!chatId) return;
+    syncChat();
+    const ctx = getContext(); const chatId = currentChatId; if (!chatId || !stateReady) return;
+    const myChat = chatId;
     if (!settings.chatStates) settings.chatStates = {};
     const cs = settings.chatStates[chatId] || (settings.chatStates[chatId] = {});
     if (cs.brokenDropped) return;               // fire at most once per chat
@@ -2173,6 +2252,7 @@ async function maybeDropBrokenGear() {
         const pick = kinds[Math.floor(Math.random() * kinds.length)];
         const sys = `Invent ONE ${pick[1]} the character stumbles on at the start of a scene, fitting the WORLD/ERA/setting below. Give a short "name" and a one-line "desc". Write in ${genLang()}. Output JSON: {"name":"","desc":""}`;
         const res = await callAI(sys, settingContext());
+        if (!ownsChat(myChat)) return;          // chat switched while the model was thinking
         const name = String((res && res.name) || 'Broken item').slice(0, 50);
         const desc = String((res && res.desc) || '').slice(0, 120);
         inv.add({ name, desc, type: pick[0], dur: 0, max: 100, broken: true, grade: (Math.random() < 0.15 ? 3 : (Math.random() < 0.4 ? 2 : 1)) });
@@ -2195,8 +2275,11 @@ jQuery(() => {
     setupUI();
     if (getContext().chatId) { loadState(); renderButton(); buildInjection(); buildCardInjection(); restoreVendorButtons(); }
 
-    eventSource.on(event_types.CHAT_CHANGED, () => {
-        setTimeout(() => { loadState(); view = 'list'; renderButton(); renderPanel(); buildInjection(); buildCardInjection(); restoreVendorButtons(); maybeDropBrokenGear(); }, 100);
+    eventSource.on(event_types.CHAT_CHANGED, (chatIdArg) => {
+        // let go of the previous chat's vendors AT ONCE, so nothing can be saved into the new chat
+        stateReady = false; currentChatId = null; pendingChatId = chatIdArg || null;
+        state = freshState();
+        setTimeout(() => { loadState(pendingChatId || getContext().chatId); view = 'list'; renderButton(); renderPanel(); buildInjection(); buildCardInjection(); restoreVendorButtons(); maybeDropBrokenGear(); }, 100);
     });
     eventSource.on(event_types.CHARACTER_MESSAGE_RENDERED, () => restoreVendorButtons());
     eventSource.on(event_types.MESSAGE_EDITED, () => restoreVendorButtons());
