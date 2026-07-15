@@ -1,5 +1,5 @@
 import { getContext, extension_settings } from '../../../extensions.js';
-import { eventSource, event_types, saveChatDebounced, saveSettingsDebounced, setExtensionPrompt, extension_prompt_roles, characters } from '../../../../script.js';
+import { eventSource, event_types, saveChatDebounced, saveSettingsDebounced, saveSettings as stSaveSettings, setExtensionPrompt, extension_prompt_roles, characters } from '../../../../script.js';
 
 const MODULE_NAME = 'rpg_vendors';
 const PROMPT_KEY = 'rpg_vendor_injection';
@@ -209,8 +209,16 @@ function loadSettings() {
     // heal NaN/garbage that an empty number input could have saved
     if (!Number.isFinite(settings.injectDepth)) settings.injectDepth = defaultSettings.injectDepth;
 }
-function saveSettings() {
+function saveSettings(immediate = true) {
     extension_settings[MODULE_NAME] = settings;
+    // Discrete changes (buying, selling, taking loot, crafting…) flush to disk right away, so a quick
+    // page reload can't lose coins or items (the debounced save can be ~1s late and get dropped on
+    // refresh). High-frequency per-message writes pass immediate=false to stay debounced. Same pattern
+    // as RPG-Equipment-Durability.
+    if (immediate && typeof stSaveSettings === 'function') {
+        try { const p = stSaveSettings(); if (p && typeof p.catch === 'function') p.catch(() => { }); return; }
+        catch (e) { /* fall back to debounced below */ }
+    }
     if (typeof saveSettingsDebounced === 'function') saveSettingsDebounced();
 }
 
@@ -281,14 +289,14 @@ function loadState(explicitId) {
     }
 }
 function cloneState(s) { try { return JSON.parse(JSON.stringify(s)); } catch (e) { return freshState(); } }
-function saveState() {
+function saveState(immediate = true) {
     if (!stateReady || !currentChatId) return;                 // mid-switch: do not write
     const ctx = getContext();
     if (ctx.chatId && ctx.chatId !== currentChatId) return;    // state belongs to a chat we left
     settings.chatStates[currentChatId] = state;
     if (!settings.chatStamps) settings.chatStamps = {};
     settings.chatStamps[currentChatId] = Date.now();
-    saveSettings();
+    saveSettings(immediate);
 
     // Backup inside the chat itself, as a copy. This is what survives a group conversion.
     try {
