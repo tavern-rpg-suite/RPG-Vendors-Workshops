@@ -21,7 +21,8 @@ const defaultSettings = {
     questsNeedPresence: false,
     autoChatNote: true,
     requireAiCheck: false,
-    chatStates: {}
+    chatStates: {},
+    chatStamps: {}   // chatId -> last-used timestamp, lets stale states be pruned
 };
 
 let settings = {};
@@ -204,10 +205,35 @@ function loadSettings() {
     if (!extension_settings[MODULE_NAME]) extension_settings[MODULE_NAME] = {};
     settings = Object.assign({}, defaultSettings, extension_settings[MODULE_NAME]);
     if (!settings.chatStates) settings.chatStates = {};
+    if (!settings.chatStamps) settings.chatStamps = {};
+    // heal NaN/garbage that an empty number input could have saved
+    if (!Number.isFinite(settings.injectDepth)) settings.injectDepth = defaultSettings.injectDepth;
 }
 function saveSettings() {
     extension_settings[MODULE_NAME] = settings;
     if (typeof saveSettingsDebounced === 'function') saveSettingsDebounced();
+}
+
+// Per-chat vendor states used to live in settings forever, bloating settings.json.
+// States untouched for STATE_TTL days are dropped; they remain recoverable from the
+// rpg_vendors_checkpoint backup written into the chat itself (and the carry-over
+// control only ever offered states that still exist here anyway).
+const STATE_TTL_MS = 60 * 24 * 60 * 60 * 1000; // 60 days
+function pruneOldStates() {
+    const now = Date.now();
+    let changed = false;
+    for (const id of Object.keys(settings.chatStates)) {
+        if (!settings.chatStamps[id]) { settings.chatStamps[id] = now; changed = true; continue; } // migrate
+        if (now - settings.chatStamps[id] > STATE_TTL_MS) {
+            delete settings.chatStates[id];
+            delete settings.chatStamps[id];
+            changed = true;
+        }
+    }
+    for (const id of Object.keys(settings.chatStamps)) {
+        if (!settings.chatStates[id]) { delete settings.chatStamps[id]; changed = true; }
+    }
+    if (changed) saveSettings();
 }
 
 function freshState() { return { vendors: [], activeVendorId: null, quests: [] }; }
@@ -221,6 +247,8 @@ function loadState(explicitId) {
     const chatId = explicitId || pendingChatId || getContext().chatId;
     if (!chatId) { currentChatId = null; pendingChatId = null; stateReady = false; state = freshState(); return; }
     currentChatId = chatId; pendingChatId = null; stateReady = true;
+    if (!settings.chatStamps) settings.chatStamps = {};
+    settings.chatStamps[chatId] = Date.now();   // touch: keeps this chat's state from being pruned
     if (settings.chatStates[chatId] && Array.isArray(settings.chatStates[chatId].vendors)) {
         state = settings.chatStates[chatId];
         if (!('activeVendorId' in state)) state.activeVendorId = null;
@@ -258,6 +286,8 @@ function saveState() {
     const ctx = getContext();
     if (ctx.chatId && ctx.chatId !== currentChatId) return;    // state belongs to a chat we left
     settings.chatStates[currentChatId] = state;
+    if (!settings.chatStamps) settings.chatStamps = {};
+    settings.chatStamps[currentChatId] = Date.now();
     saveSettings();
 
     // Backup inside the chat itself, as a copy. This is what survives a group conversion.
@@ -585,6 +615,7 @@ async function offerRepair(vendor) {
     if (!gear || !item) { toastr.warning(t('pick_both')); return; }
 
     toastr.info(t('toast_validating'));
+    const myChat = currentChatId;   // the repair below acts on THIS chat's gear/inventory
     try {
         const sys = `You are the logic arbiter for an RPG vendor.
 Vendor: "${vendor.name}" — a ${vendorRole(vendor)} (${vendor.desc || 'no extra info'}).
@@ -596,6 +627,8 @@ Be sensible: e.g. an inkwell cannot fix boots (at best it could dye them a littl
 If logical, choose how much durability it restores (different items restore different amounts).
 Respond strictly JSON: {"logical": true/false, "amount": <integer 0-100, percent of durability restored if logical else 0>, "reason": "<one short in-character sentence in ${genLang()}>"}`;
         const res = await callAI(sys, 'Judge the repair attempt.');
+        if (!ownsChat(myChat)) return;   // chat changed: the bridge calls below would hit the NEW
+                                         // chat's inventory/equipment and drop a note into its chat
         if (res.logical) {
             const amt = Math.max(1, Math.min(100, parseInt(res.amount) || 25));
             if (isInv) inv.repair(targetId, amt); else eq.repair(gear.slot, amt);
@@ -603,13 +636,13 @@ Respond strictly JSON: {"logical": true/false, "amount": <integer 0-100, percent
             let tail = '';
             if (typeof inv.consumeAsMaterial === 'function') {
                 const worn = inv.consumeAsMaterial(item.id, 34);
-                tail = ' ' + (worn.consumed ? t('mat_used_up', { item: item.name }) : t('mat_left', { item: item.name, n: worn.left }));
+                tail = ' ' + (worn.consumed ? t('mat_used_up', { item: escapeHtml(item.name) }) : t('mat_left', { item: escapeHtml(item.name), n: worn.left }));
             } else { inv.remove(item.id); }
             selItemId = '';
             if (settings.autoChatNote) insertChatNote(t('cn_repair', { user: getContext().name1 || 'I', vendor: vendor.name, gear: gear.name, item: item.name }));
-            toastr.success(t('toast_repaired', { vendor: vendor.name, gear: gear.name, amt: amt, reason: res.reason || '' }) + tail);
+            toastr.success(t('toast_repaired', { vendor: escapeHtml(vendor.name), gear: escapeHtml(gear.name), amt: amt, reason: escapeHtml(res.reason || '') }) + tail);
         } else {
-            toastr.warning(t('toast_rejected', { vendor: vendor.name, reason: res.reason || '' }));
+            toastr.warning(t('toast_rejected', { vendor: escapeHtml(vendor.name), reason: escapeHtml(res.reason || '') }));
         }
         renderPanel();
     } catch (e) { toastr.error(t('toast_repair_err')); }
@@ -624,6 +657,7 @@ function mostDamagedSlot() {
 async function generateQuests(vendor) {
     if (!settings.enabled) return;
     toastr.info(t('q_gen'));
+    const myChat = currentChatId;   // `state.quests` below must still be THIS chat's list
     const ctx = getContext();
     const first = ctx.chat && ctx.chat[0] ? (ctx.chat[0].mes || '') : '';
     try {
@@ -637,6 +671,8 @@ VARY the reward kinds across the quests — include AT LEAST one that pays "coin
 Write EVERYTHING strictly in ${genLang()}.
 Output strictly JSON: {"quests":[{"type":"fetch","title":"","desc":"","requirement":"","reward":{"kind":"item","name":"","effect":"","amount":0}}]}`;
         const res = await callAI(sys, settingContext());
+        if (!ownsChat(myChat)) return;   // chat switched mid-request: `state` now belongs to the NEW
+                                         // chat — pushing here used to leak the old vendor's quests into it
         const arr = Array.isArray(res.quests) ? res.quests : [];
         let added = 0;
         for (const q of arr.slice(0, 5)) {
@@ -659,7 +695,7 @@ function findQuest(id) { return (state.quests || []).find(q => q.id === id); }
 function acceptQuest(id) {
     const q = findQuest(id); if (!q) return;
     const vp = state.vendors.find(x => x.id === q.vendorId);
-    if (!vendorPresent(vp)) { toastr.warning(t('not_present', { vendor: vp ? vp.name : '?' })); return; }
+    if (!vendorPresent(vp)) { toastr.warning(t('not_present', { vendor: escapeHtml(vp ? vp.name : '?') })); return; }
     q.status = 'active'; saveState(); buildInjection(); renderPanel();
     if (settings.autoChatNote) {
         const v = state.vendors.find(x => x.id === q.vendorId);
@@ -683,7 +719,11 @@ function insertChatNote(text) {
         return true;
     } catch (e) {
         const ta = $('#send_textarea');
-        if (ta.length) { ta.val(text).trigger('input'); ta.focus(); }
+        if (ta.length) {
+            // append rather than replace — never destroy what the user was typing
+            const cur = ta.val();
+            ta.val((cur ? cur + '\n\n' : '') + text).trigger('input'); ta.focus();
+        }
         return false;
     }
 }
@@ -697,14 +737,14 @@ function completeQuest(id) {
     const q = findQuest(id); if (!q) return;
     if (q.reward && q.reward.kind === 'item') {
         const inv = invApi();
-        if (inv) { inv.add({ name: q.reward.name || 'Reward', desc: '' }); toastr.success(t('q_done_item', { name: q.reward.name })); }
+        if (inv) { inv.add({ name: q.reward.name || 'Reward', desc: '' }); toastr.success(t('q_done_item', { name: escapeHtml(q.reward.name) })); }
         else toastr.warning(t('q_need_inv'));
     } else if (q.reward && q.reward.kind === 'repair') {
         const eq = eqApi(); const slot = mostDamagedSlot();
         if (eq && slot) {
             const amt = Math.max(1, Math.min(100, parseInt(q.reward.amount) || 25));
             const lbl = (eq.repairable().find(g => g.slot === slot) || {}).label || slot;
-            eq.repair(slot, amt); toastr.success(t('q_done_repair', { gear: lbl, amount: amt }));
+            eq.repair(slot, amt); toastr.success(t('q_done_repair', { gear: escapeHtml(lbl), amount: amt }));
         } else toastr.info(t('q_done_repair_none'));
     } else if (q.reward && q.reward.kind === 'coins') {
         const inv = invApi();
@@ -712,10 +752,10 @@ function completeQuest(id) {
         else toastr.warning(t('q_need_inv'));
     } else if (q.reward && q.reward.kind === 'buff') {
         const vit = vitApi();
-        if (vit) { vit.addBuff({ name: q.reward.name, effect: q.reward.effect || '', kind: 'buff', duration: q.reward.amount || 3 }); toastr.success(t('q_done_buff', { name: q.reward.name })); }
-        else toastr.info(t('q_done_plain', { reward: rewardText(q.reward) }));
+        if (vit) { vit.addBuff({ name: q.reward.name, effect: q.reward.effect || '', kind: 'buff', duration: q.reward.amount || 3 }); toastr.success(t('q_done_buff', { name: escapeHtml(q.reward.name) })); }
+        else toastr.info(t('q_done_plain', { reward: escapeHtml(rewardText(q.reward)) }));
     } else {
-        toastr.success(t('q_done_plain', { reward: rewardText(q.reward) }));
+        toastr.success(t('q_done_plain', { reward: escapeHtml(rewardText(q.reward)) }));
     }
     q.status = 'done'; saveState(); buildInjection(); renderPanel();
     if (settings.autoChatNote) {
@@ -727,6 +767,7 @@ function sellValue(it) { return Math.max(1, Math.round((it.chance || 30) / 10));
 async function generateShop(vendor) {
     if (!settings.enabled) return;
     toastr.info(t('shop_gen'));
+    const myChat = currentChatId;
     // remember everything this vendor has stocked before, so re-rolls don't repeat themselves
     if (!Array.isArray(vendor.seenGoods)) vendor.seenGoods = [];
     (vendor.stock || []).forEach(s => { const n = String(s.name || '').trim(); if (n && !vendor.seenGoods.some(x => x.toLowerCase() === n.toLowerCase())) vendor.seenGoods.push(n); });
@@ -744,6 +785,7 @@ Output strictly JSON: {"goods":[{"name":"","type":"misc","desc":"","price":10,"w
         // a touch hotter than usual so re-rolls vary; capped so it doesn't go incoherent
         const temp = Math.min(1.15, (typeof settings.temperature === 'number' ? settings.temperature : 0.7) + 0.25);
         const res = await callAI(sys, settingContext(), temp);
+        if (!ownsChat(myChat)) return;   // chat changed during the restock
         const goods = Array.isArray(res.goods) ? res.goods : [];
         vendor.stock = goods.slice(0, 8).map(g => ({ id: genId(), name: String(g.name || 'Item'), type: String(g.type || 'misc'), desc: String(g.desc || ''), price: Math.max(1, parseInt(g.price) || 10), weight: (typeof g.weight === 'number' && g.weight > 0) ? g.weight : undefined, heal: (typeof g.heal === 'number' && g.heal > 0) ? g.heal : undefined, food: (typeof g.food === 'number' && g.food > 0) ? g.food : undefined, buff: (g.buff && g.buff.name) ? { name: String(g.buff.name), effect: String(g.buff.effect || ''), duration: (typeof g.buff.duration === 'number' && g.buff.duration > 0) ? g.buff.duration : null } : undefined }));
         // fold the fresh names into memory too
@@ -759,7 +801,7 @@ function buyGood(vendor, goodId) {
     if (!good) return;
     if (!inv.spendCoins(good.price)) { toastr.warning(t('not_enough')); return; }
     inv.add({ name: good.name, desc: good.desc, type: good.type, weight: good.weight, heal: good.heal, food: good.food, buff: good.buff });
-    toastr.success(t('bought', { name: good.name }));
+    toastr.success(t('bought', { name: escapeHtml(good.name) }));
     renderPanel();
 }
 function sellItem(invId) {
@@ -769,7 +811,7 @@ function sellItem(invId) {
     if (!it) return;
     const val = sellValue(it);
     inv.remove(invId); inv.addCoins(val);
-    toastr.success(t('sold', { name: it.name, n: val }));
+    toastr.success(t('sold', { name: escapeHtml(it.name), n: val }));
     renderPanel();
 }
 function giveCoins(vendor, amt) {
@@ -778,7 +820,7 @@ function giveCoins(vendor, amt) {
     if (!amt || amt <= 0) return;
     if (!inv.spendCoins(amt)) { toastr.warning(t('not_enough')); return; }
     insertChatNote(t('cn_give', { user: getContext().name1 || 'I', vendor: vendor.name, n: amt }));
-    toastr.success(t('gave', { n: amt, vendor: vendor.name }));
+    toastr.success(t('gave', { n: amt, vendor: escapeHtml(vendor.name) }));
     renderPanel();
 }
 // ============================ SKILLS & RECIPES ============================
@@ -812,7 +854,7 @@ function addSkillXp(v, n) {
     v.skill.xp += Math.round(n || 0);
     while (v.skill.xp >= SKILL_XP && v.skill.level < MAX_SKILL_LEVEL) {
         v.skill.xp -= SKILL_XP; v.skill.level++;
-        toastr.info(t('skill_up', { skill: v.skill.name, lvl: v.skill.level }));
+        toastr.info(t('skill_up', { skill: escapeHtml(v.skill.name), lvl: v.skill.level }));
     }
     if (v.skill.level >= MAX_SKILL_LEVEL) v.skill.xp = Math.min(v.skill.xp, SKILL_XP);
 }
@@ -896,7 +938,7 @@ function learnRecipe(v, id) {
     const gained = 10 + r.stars * 5;
     addSkillXp(v, gained);
     saveState(); renderPanel();
-    toastr.success(t('r_learned', { name: r.name, xp: gained }));
+    toastr.success(t('r_learned', { name: escapeHtml(r.name), xp: gained }));
 }
 
 // ==================== INGREDIENTS / CRAFT / TRAINING ====================
@@ -928,12 +970,14 @@ function buildCraftedItem(v, r, q) {
 // (equippable junk applies its debuff while worn and clears when taken off; bad food debuffs on eating).
 async function addBotchedItem(v, baseName, typeHint) {
     const inv = invApi(); if (!inv) return null;
+    const myChat = currentChatId;   // the junk item must land in THIS chat's backpack
     try {
         const sys = `A crafting attempt by a ${vendorRole(v)} (deals in ${vendorDomain(v)}) FAILED${baseName ? ' while making "' + baseName + '"' : ''}.
 Invent the botched result with a wry, Sims-like name (e.g. "Charred Mystery Rice", "Lumpy Grey Stew", "Crooked Bent Blade", "Itchy Lopsided Vest").
 Give: "name", "type" (food, consumable, weapon, armor, clothing or misc — match what was being made), and a "debuff" {"name":"","effect":"","duration":turns} — a NEGATIVE effect that triggers when the item is eaten or worn.
 Strictly ${genLang()}. Output JSON: {"name":"","type":"food","debuff":{"name":"","effect":"","duration":3}}`;
         const res = await callAI(sys, settingContext(), Math.min(1.1, (typeof settings.temperature === 'number' ? settings.temperature : 0.7) + 0.2));
+        if (!ownsChat(myChat)) return null;   // chat changed during the request
         const types = ['food', 'consumable', 'weapon', 'armor', 'clothing', 'misc'];
         const type = types.includes(res.type) ? res.type : (types.includes(typeHint) ? typeHint : 'misc');
         const db = res.debuff || {};
@@ -943,7 +987,7 @@ Strictly ${genLang()}. Output JSON: {"name":"","type":"food","debuff":{"name":""
         if (type === 'food') item.food = 3; // bad food barely fills
         inv.add(item);
         return item.name;
-    } catch (e) { console.error('botched item', e); inv.add({ name: baseName ? (baseName + ' (botched)') : 'Botched item', desc: '', type: typeHint || 'misc' }); return null; }
+    } catch (e) { console.error('botched item', e); if (!ownsChat(myChat)) return null; inv.add({ name: baseName ? (baseName + ' (botched)') : 'Botched item', desc: '', type: typeHint || 'misc' }); return null; }
 }
 function skillHeaderHtml(v) {
     ensureSkill(v); const sk = v.skill;
@@ -1182,17 +1226,17 @@ function craftRecipe(v, id) {
     (r.ingredients || []).forEach(n => { const k = ingKey(n); need[k] = (need[k] || 0) + 1; label[k] = n; });
     const missing = [], useIds = [];
     for (const k in need) { const have = (byKey[k] || []).length; if (have < need[k]) missing.push(label[k] || k); else useIds.push(...byKey[k].slice(0, need[k])); }
-    if (missing.length) { toastr.warning(t('craft_need', { list: missing.join(', ') })); return; }
+    if (missing.length) { toastr.warning(t('craft_need', { list: escapeHtml(missing.join(', ')) })); return; }
     showMiniGame(v.skill.level, (q) => {
         useIds.forEach(x => inv.remove(x));
         if (q < 0.34) { // botched attempt → junk item with a debuff
             addSkillXp(v, 3);
-            addBotchedItem(v, r.name, craftItemType(v)).then(n => { saveState(); afterCraftChange(); toastr.warning(t('craft_botched', { name: n || r.name })); });
+            addBotchedItem(v, r.name, craftItemType(v)).then(n => { saveState(); afterCraftChange(); toastr.warning(t('craft_botched', { name: escapeHtml(n || r.name) })); });
             return;
         }
         inv.add(buildCraftedItem(v, r, q)); // effect fires when eaten / worn — not now
         addSkillXp(v, 8 + r.stars * 4 + Math.round(q * 10));
-        saveState(); afterCraftChange(); toastr.success(t('craft_done', { name: r.name }));
+        saveState(); afterCraftChange(); toastr.success(t('craft_done', { name: escapeHtml(r.name) }));
     });
 }
 
@@ -1200,6 +1244,7 @@ function craftRecipe(v, id) {
 // (metal in a kitchen won't fit → fails). Success → good buff item; failure → wry junk with a debuff.
 async function freestyleResolve(v, items, q, onDone) {
     const inv = invApi();
+    const myChat = currentChatId;   // the remove/add below must act on THIS chat's backpack
     const base = [10, 30, 50, 70, 90][Math.max(0, Math.min(4, v.skill.level - 1))];
     const qb = (typeof q === 'number') ? Math.round(q * 8) : (q === 'perfect' ? 8 : q === 'bad' ? -12 : 0);
     const rngSuccess = Math.random() * 100 < Math.max(3, Math.min(90, base + qb));
@@ -1213,6 +1258,8 @@ Treating this as a ${rngSuccess ? 'promising' : 'shaky'} attempt:
 - If it FAILS: a wry Sims-like botched "name" (e.g. "Charred Mystery Rice", "Lumpy Grey Stew"), a fitting "type", and a NEGATIVE "effect" (a debuff) that triggers when the item is eaten or worn.
 Strictly ${genLang()}. Output JSON: {"fits":true,"name":"","type":"consumable","effect":{"name":"","effect":"","duration":3}}`;
         const res = await callAI(sys, settingContext(), Math.min(1.05, (typeof settings.temperature === 'number' ? settings.temperature : 0.7) + 0.15));
+        if (!ownsChat(myChat)) return { success: false, name: '\u2717' };   // chat changed: the bridge
+                                         // would remove/add items in the NEW chat's backpack
         if (inv) items.forEach(i => inv.remove(i.id));
         const fits = res.fits !== false;
         const success = rngSuccess && fits;
@@ -1226,7 +1273,7 @@ Strictly ${genLang()}. Output JSON: {"fits":true,"name":"","type":"consumable","
         if (type === 'food') item.food = success ? (8 + Math.floor(Math.random() * 10)) : 3;
         if (inv) inv.add(item);
         const rn = res.name || eff.name || '?';
-        if (success) toastr.success(t('free_success', { name: rn })); else toastr.warning(t('free_fail', { name: rn }));
+        if (success) toastr.success(t('free_success', { name: escapeHtml(rn) })); else toastr.warning(t('free_fail', { name: escapeHtml(rn) }));
         if (onDone) onDone(success, rn);
         return { success, name: rn };
     } catch (e) { console.error('Freestyle craft error:', e); toastr.error(t('craft_err')); return { success: false, name: '\u2717' }; }
@@ -1248,10 +1295,10 @@ function grantTrainingReward(v, beforeLevel) {
     vit.addBuff({ name: t('train_perk', { skill: v.skill.name }), effect: t('train_perk_eff', { skill: v.skill.name, lvl: v.skill.level }), kind: 'buff', duration: null, tag: 'train:' + v.id + ':' + v.skill.level });
     const hp = (typeof vit.getHp === 'function') ? vit.getHp() : null;
     if (hp && typeof vit.setHp === 'function') { const bump = 4 + v.skill.level * 2; vit.setHp(hp.hp + bump, hp.max + bump); }
-    toastr.success(t('train_perk_got', { skill: v.skill.name }));
+    toastr.success(t('train_perk_got', { skill: escapeHtml(v.skill.name) }));
 }
 // FREE, story-driven: log a sparring win from the RP. Raises the level WITHOUT paying (no special reward).
-function sparWin(v) { ensureSkill(v); addSkillXp(v, 15); saveState(); renderPanel(); afterCraftChange(); toastr.success(t('train_story', { xp: 15, skill: v.skill.name })); }
+function sparWin(v) { ensureSkill(v); addSkillXp(v, 15); saveState(); renderPanel(); afterCraftChange(); toastr.success(t('train_story', { xp: 15, skill: escapeHtml(v.skill.name) })); }
 
 // ---- Trainer quest program (practice drills + field tasks graded from the story) ----
 function parseQuestReward(rw) {
@@ -1297,9 +1344,9 @@ function grantQuestReward(v, q, quality) {
     const notes = [`+${xp} XP`];
     if (rw.kind === 'buff' && rw.buff && rw.buff.name && vit) {
         vit.addBuff({ name: rw.buff.name, effect: rw.buff.effect || '', kind: 'buff', duration: rw.perm ? null : Math.max(1, parseInt(rw.buff.duration) || 3), tag: rw.perm ? ('train:' + v.id + ':' + q.id) : undefined });
-        notes.push((rw.perm ? '★ ' : '') + rw.buff.name);
+        notes.push((rw.perm ? '★ ' : '') + escapeHtml(rw.buff.name));
     } else if (rw.kind === 'item' && rw.item && rw.item.name && inv) {
-        const it = buildTrainingItem(rw.item); inv.add(it); notes.push('🎁 ' + it.name);
+        const it = buildTrainingItem(rw.item); inv.add(it); notes.push('🎁 ' + escapeHtml(it.name));
     }
     if (settings.autoChatNote) insertChatNote(t('cn_train_done', { user: getContext().name1 || 'I', vendor: v.name, skill: v.skill.name, title: q.title, desc: q.desc || '', reward: questRewardPlain(q) }));
     saveState(); renderPanel();
@@ -1314,12 +1361,14 @@ async function failMain(v, q) {
     const vit = vitApi();
     if (vit) vit.addBuff({ name: t('train_fail_debuff', { skill: v.skill.name }), effect: t('train_fail_debuff_eff'), kind: 'debuff', duration: 4 });
     saveState(); afterCraftChange(); toastr.warning(t('q_failed_note'));
+    const myChat = currentChatId;
     try {
         const sys = `You are ${v.name}, a ${vendorRole(v)} teaching "${v.skill.name}". Invent ONE replacement MAIN lesson for a level-${lvl} student (the previous one was abandoned). Give "title", "desc" (one sentence), "type" ("practice" or "field"), and a "reward" {"kind":"xp|buff|item","xp":10-40,...}. Fit the setting; write in ${genLang()}.
 Output strictly JSON: {"title":"","desc":"","type":"field","reward":{"kind":"xp","xp":15}}`;
         const res = await callAI(sys, settingContext(), Math.min(1.05, (typeof settings.temperature === 'number' ? settings.temperature : 0.7) + 0.15));
+        if (!ownsChat(myChat)) return;   // chat changed while inventing the replacement
         v.training.push({ id: genId(), title: String(res.title || 'Lesson').slice(0, 60), desc: String(res.desc || '').slice(0, 200), type: res.type === 'field' ? 'field' : 'practice', minLevel: lvl, grad: false, main: true, reward: parseQuestReward(res.reward), done: false });
-    } catch (e) { v.training.push({ id: genId(), title: t('q_practice'), desc: '', type: 'practice', minLevel: lvl, grad: false, main: true, reward: { kind: 'xp', xp: 15 }, done: false }); }
+    } catch (e) { if (!ownsChat(myChat)) return; v.training.push({ id: genId(), title: t('q_practice'), desc: '', type: 'practice', minLevel: lvl, grad: false, main: true, reward: { kind: 'xp', xp: 15 }, done: false }); }
     v.training.sort((a, b) => (a.minLevel - b.minLevel) || (a.grad ? 1 : -1));
     saveState(); afterCraftChange();
 }
@@ -1381,12 +1430,14 @@ async function checkField(v, q) {
     const msgs = chat.slice(from).map(m => (m.is_user ? '[You] ' : '[Scene] ') + String(m.mes || '').slice(0, 400)).join('\n');
     if (!msgs.trim()) { toastr.warning(t('q_no_scene')); return; }
     toastr.info(t('q_checking'));
+    const myChat = currentChatId;   // the reward (buff/item + chat note) must land in THIS chat
     try {
         const sys = `A trainer set this task: "${q.title} — ${q.desc}". Read the roleplay below (everything since the student took on the task) and decide whether the student "${ctx.name1 || 'the player'}" ACTUALLY carried it out in the story. Be fair, but require real evidence in the text (not just intent). Reply in ${genLang()}.
 Output JSON: {"done":true,"why":"one short sentence"}`;
         const res = await callAI(sys, msgs);
-        if (res && res.done) { grantQuestReward(v, q, 0.7); q.done = true; q.active = false; saveState(); afterCraftChange(); toastr.success(t('q_pass', { why: String(res.why || '') })); }
-        else toastr.warning(t('q_notyet', { why: String((res && res.why) || '') }));
+        if (!ownsChat(myChat)) return;   // chat changed during the review
+        if (res && res.done) { grantQuestReward(v, q, 0.7); q.done = true; q.active = false; saveState(); afterCraftChange(); toastr.success(t('q_pass', { why: escapeHtml(String(res.why || '')) })); }
+        else toastr.warning(t('q_notyet', { why: escapeHtml(String((res && res.why) || '')) }));
     } catch (e) { console.error('Field check error:', e); toastr.error(t('craft_err')); }
 }
 function ensureTraining(v) { if (!Array.isArray(v.training)) v.training = []; if (!Array.isArray(v.drills)) v.drills = []; }
@@ -1402,7 +1453,7 @@ function advanceTrainerLevel(v) {
     v.skill.level++; v.skill.xp = 0;
     grantTrainingReward(v, before); // permanent perk + max-HP bump on level-up
     v.drills = []; // old drills close; fresh ones for the new level
-    toastr.success(t('train_levelup', { skill: v.skill.name, lvl: v.skill.level }));
+    toastr.success(t('train_levelup', { skill: escapeHtml(v.skill.name), lvl: v.skill.level }));
     saveState();
     generateDrills(v); // auto-roll drills for the new level
 }
@@ -1411,6 +1462,7 @@ async function generateTraining(v) {
     if (!settings.enabled) return;
     ensureSkill(v); ensureTraining(v);
     toastr.info(t('train_gen_run'));
+    const myChat = currentChatId;
     try {
         const sys = `You are ${v.name}, a ${vendorRole(v)} who TEACHES the discipline "${v.skill.name}" (a physical or performance skill — e.g. swordsmanship, battle magic, an instrument, 19th-century marksmanship, dance). Design a TRAINING PROGRAM as MAIN milestones: EXACTLY 2 main lessons for EACH skill level 1, 2, 3, 4 and 5 (10 total), PLUS one special GRADUATION challenge for a master at level 5.
 Each lesson has: "title" (short), "desc" (ONE sentence on what the student must DO), "type" ("practice" = a drill repped on the spot, or "field" = something done out in the story/roleplay such as winning a spar, performing at a recital, hitting targets at a range), "minLevel" (1..5), "grad" (true only for the graduation), and a "reward":
@@ -1420,6 +1472,7 @@ Each lesson has: "title" (short), "desc" (ONE sentence on what the student must 
 Vary the reward kinds. Higher levels give stronger rewards. The GRADUATION reward is unique and powerful — a signature permanent buff or a named item. Fit the WORLD, ERA and setting; no anachronisms. Write everything in ${genLang()}.
 Output strictly JSON: {"quests":[{"title":"","desc":"","type":"practice","minLevel":1,"grad":false,"reward":{"kind":"xp","xp":15}}]}`;
         const res = await callAI(sys, settingContext());
+        if (!ownsChat(myChat)) return;   // chat changed during the request
         const qs = Array.isArray(res.quests) ? res.quests : [];
         v.training = qs.slice(0, 12).map(q => ({ id: genId(), title: String(q.title || 'Lesson').slice(0, 60), desc: String(q.desc || '').slice(0, 200), type: q.type === 'field' ? 'field' : 'practice', minLevel: Math.max(1, Math.min(5, parseInt(q.minLevel) || 1)), grad: !!q.grad, main: true, reward: parseQuestReward(q.reward), done: false }));
         if (v.training.length && !v.training.some(q => q.grad)) { const g = v.training.slice().sort((a, b) => b.minLevel - a.minLevel)[0]; if (g) { g.grad = true; g.minLevel = 5; } }
@@ -1434,12 +1487,14 @@ async function generateDrills(v) {
     if (!settings.enabled) return;
     ensureSkill(v); ensureTraining(v);
     toastr.info(t('drill_gen_run'));
+    const myChat = currentChatId;
     try {
         const sys = `You are ${v.name}, a ${vendorRole(v)} teaching "${v.skill.name}". Invent 3 SMALL extra exercises for a level-${v.skill.level} student — short and thematic to your discipline (e.g. a pianist: "Play the étude at the café"; a ninja: "Slip through the crowd unseen and tag the mark"; a boxer: "Spar three rounds without dropping your guard").
 Each has: "title" (short), "desc" (ONE sentence on what to DO), and "type" — mostly "field" (something ACTED OUT in the story/roleplay), occasionally "practice" (a quick on-the-spot drill). Prefer "field". These give only XP.
 Fit the WORLD/ERA/setting; write in ${genLang()}.
 Output strictly JSON: {"drills":[{"title":"","desc":"","type":"field"}]}`;
         const res = await callAI(sys, settingContext(), Math.min(1.1, (typeof settings.temperature === 'number' ? settings.temperature : 0.7) + 0.15));
+        if (!ownsChat(myChat)) return;   // chat changed during the request
         const ds = Array.isArray(res.drills) ? res.drills : [];
         v.drills = ds.slice(0, 3).map(d => ({ id: genId(), title: String(d.title || 'Drill').slice(0, 60), desc: String(d.desc || '').slice(0, 160), type: d.type === 'practice' ? 'practice' : 'field', minLevel: v.skill.level, drill: true, reward: { kind: 'xp', xp: 10 + Math.floor(Math.random() * 8) }, done: false }));
         saveState(); afterCraftChange(); toastr.success(t('drill_gen_done'));
@@ -1557,6 +1612,10 @@ function cbRenderRecipes(v) {
 function cbRenderBench(v) {
     const box = cbEl('vc-bench'); if (!box) return;
     const r = cbCurRecipe(v);
+    const bag0 = cbBag(v);
+    // an item placed on the bench can vanish from the backpack meanwhile (sold in the Shop tab,
+    // eaten, consumed by a repair) — release such slots instead of "crafting" with ghosts
+    benchSlots.forEach(s => { if (s.itemId && !bag0.some(b => b.id === s.itemId)) s.itemId = null; });
     const outKey = benchSel === 'free' ? 'flask' : (r ? recipeIconKey(r) : 'spark');
     const ready = cbReady();
     const n = benchSlots.length, R = 39;
@@ -1659,7 +1718,13 @@ function craftPlace(v, itemId) {
 }
 function craftUnslot(v, i) { if (benchBusy) return; const s = benchSlots[i]; if (s && s.itemId) { s.itemId = null; benchCrafted = ''; cbRenderBench(v); cbRenderInv(v); } }
 function craftGo(v) {
-    if (benchBusy || !cbReady()) return;
+    if (benchBusy) return;
+    // re-validate right before firing: a slotted item may have been sold/eaten since placement
+    const bag = cbBag(v);
+    let stale = false;
+    benchSlots.forEach(s => { if (s.itemId && !bag.some(b => b.id === s.itemId)) { s.itemId = null; stale = true; } });
+    if (stale) { cbRenderBench(v); cbRenderInv(v); return; }
+    if (!cbReady()) return;
     const r = cbCurRecipe(v);
     if (r && (r.kind === 'sharpen' || r.kind === 'repair') && !sharpenTarget) { toastr.warning(t('sharpen_need_target')); return; }
     startCook(v);
@@ -1745,7 +1810,7 @@ async function finishCraft(v, q) {
             const N = benchCraftedQ === 'perfect' ? 12 : (benchCraftedQ === 'bad' ? 5 : 8);
             for (let k = 0; k < N; k++) { const sp = document.createElement('span'); sp.className = 'spark'; sp.style.left = '50%'; sp.style.top = '50%'; if (benchCraftedQ === 'bad') sp.style.background = '#8a2c23'; if (benchCraftedQ === 'perfect') sp.style.background = '#7bbf3a'; const a = (k / N) * 6.28, rr = benchCraftedQ === 'perfect' ? 58 : 46, dx = Math.cos(a) * rr, dy = Math.sin(a) * rr; sp.animate([{ transform: 'translate(-50%,-50%) scale(.4)', opacity: 1 }, { transform: `translate(calc(-50% + ${dx}px),calc(-50% + ${dy}px)) scale(1)`, opacity: 0 }], { duration: 680, easing: 'ease-out' }); node.parentElement.appendChild(sp); setTimeout(() => sp.remove(), 700); }
         }
-        toastr.success(t('craft_done', { name: producedName }));
+        toastr.success(t('craft_done', { name: escapeHtml(producedName) }));
     }, 600);
 }
 
@@ -1810,7 +1875,9 @@ function renderButton() {
                 <div class="rpg-modal-header" id="rpg-vnd-drag"><span><i class="fa-solid fa-store"></i> <span id="rpg-vnd-title">${escapeHtml(t('panel_title'))}</span></span> <i class="fa-solid fa-xmark rpg-modal-close"></i></div>
                 <div class="rpg-vnd-body" id="rpg-vnd-body"></div>
             </div>`);
-        $('#rpg-vnd-modal .rpg-modal-close').on('click', () => $('#rpg-vnd-modal').removeClass('visible'));
+        // Delegated + namespaced: a direct element binding here used to be stripped
+        // by sibling extensions doing a blanket $('.rpg-modal-close').off('click').
+        $(document).off('click.rpgVndClose').on('click.rpgVndClose', '#rpg-vnd-modal .rpg-modal-close', () => $('#rpg-vnd-modal').removeClass('visible'));
         window.addEventListener('resize', () => { if ($('#rpg-vnd-modal').hasClass('visible')) fitPanel(); });
     }
     if (!settings.enabled) { $('#rpg-vnd-btn').hide(); return; }
@@ -2306,7 +2373,7 @@ function setupUI() {
     $('#rpg-vnd-base').val(settings.baseUrl).on('change', function () { settings.baseUrl = $(this).val(); saveSettings(); });
     $('#rpg-vnd-key').val(settings.apiKey).on('change', function () { settings.apiKey = $(this).val(); saveSettings(); });
     $('#rpg-vnd-model').val(settings.model).on('change', function () { settings.model = $(this).val(); saveSettings(); });
-    $('#rpg-vnd-depth').val(settings.injectDepth).on('change', function () { settings.injectDepth = parseInt($(this).val()); saveSettings(); buildInjection(); buildCardInjection(); });
+    $('#rpg-vnd-depth').val(settings.injectDepth).on('change', function () { settings.injectDepth = Math.max(0, parseInt($(this).val()) || 0); $(this).val(settings.injectDepth); saveSettings(); buildInjection(); buildCardInjection(); });
     $('#rpg-vnd-autonote').prop('checked', settings.autoChatNote !== false).on('change', function () { settings.autoChatNote = this.checked; saveSettings(); });
     $('#rpg-vnd-reqai').prop('checked', !!settings.requireAiCheck).on('change', function () { settings.requireAiCheck = this.checked; saveSettings(); });
     $('#rpg-vnd-cardinject').prop('checked', settings.cardInject !== false).on('change', function () { settings.cardInject = this.checked; saveSettings(); buildInjection(); buildCardInjection(); });
@@ -2345,12 +2412,13 @@ async function maybeDropBrokenGear() {
             saveState();
             if (settings.autoChatNote) insertChatNote(t('brokendrop_note_novendor', { user: ctx.name1 || 'I', name }));
         }
-        toastr.info(t('brokendrop_toast', { name }));
+        toastr.info(t('brokendrop_toast', { name: escapeHtml(name) }));
     } catch (e) { console.error('broken drop', e); }
 }
 
 jQuery(() => {
     loadSettings();
+    pruneOldStates();
     setupUI();
     if (getContext().chatId) { loadState(); renderButton(); buildInjection(); buildCardInjection(); restoreVendorButtons(); }
 
