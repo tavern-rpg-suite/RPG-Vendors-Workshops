@@ -37,6 +37,16 @@ let dir = 0;              // flip direction for animation
 let tab = 'profile';      // dossier tab
 
 function genId() { return Math.random().toString(36).substr(2, 9); }
+// The model sometimes returns junk instead of a string (-1, 0, "null", bare numbers…).
+// String(x || fallback) let it through because -1 is truthy — that is how the broken
+// "-1" find and "-1" recipe ingredients were born. A real name must contain a letter.
+function aiName(x, fallback = null, maxLen = 60) {
+    const s = String(x == null ? '' : x).trim();
+    if (s.length < 2 || !/\p{L}/u.test(s)) return fallback;
+    if (/^(null|undefined|n\/?a|none|нет|-?\d+)$/i.test(s)) return fallback;
+    return s.slice(0, maxLen);
+}
+
 function escapeHtml(x) {
     return String(x ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
@@ -46,7 +56,7 @@ const I18N = {
     en: {
         tab_recipes: 'Recipes', skill_lbl: 'Skill', lvl_short: 'Lv', recipes_gen: '✨ Generate recipes (AI)', recipes_none: 'No recipes yet — generate some.', recipe_ing: 'Ingredients:', recipe_res: 'Result:', r_learn: 'Learn', r_known: 'Known', recipes_gen_run: 'The vendor jots down recipes...', recipes_gen_done: 'Recipes added!', recipes_gen_err: 'Could not generate — check URL / key / model.', r_learned: 'Learned "{name}" (+{xp} skill XP).', skill_up: '{skill} is now level {lvl}!',
         tab_craft: 'Craft', tab_train: 'Training',
-        ing_section: 'Ingredients', ing_gen: '✨ Generate ingredients (AI)', ing_none: 'No ingredient list yet.', ing_gather: '🔍 Gather one', ing_where: 'Found:', ing_got: 'Found: {name} ({where}).', ing_gen_run: 'Cataloguing ingredients...', ing_gen_done: 'Ingredients catalogued!', ing_need_recipes: 'Generate recipes first — ingredients come from them.', ing_goto: '{name} is found at {where}. Go there to gather it.', forage_take: '🔎 Take foraging quest', forage_run: 'Marking ingredients to forage...', forage_started: 'Hunt started — {n} ingredient(s). Search scenes with the 🔍 loupe.', forage_none_missing: 'You already have (or are hunting) everything these recipes need.', forage_need_recipe: 'Learn a recipe first — the hunt is for its ingredients.', forage_need_quest: 'The inventory / quest engine is not available.', forage_active: 'Foraging — look for:', forage_hint: 'Use the 🔍 loupe on scene messages to find these (better in the right place).',
+        ing_section: 'Ingredients', ing_gen: '✨ Generate ingredients (AI)', ing_none: 'No ingredient list yet.', ing_gather: '🔍 Gather one', ing_where: 'Found:', ing_got: 'Found: {name} ({where}).', ing_gen_run: 'Cataloguing ingredients...', ing_gen_done: 'Ingredients catalogued!', ing_need_recipes: 'Generate recipes first — ingredients come from them.', ing_goto: '{name} is found at {where}. Go there to gather it.', forage_take: '🔎 Take foraging quest', forage_run: 'Marking ingredients to forage...', forage_started: 'Hunt started — {n} ingredient(s). Search scenes with the 🔍 loupe.', forage_none_missing: 'You already have (or are hunting) everything these recipes need.', forage_need_recipe: 'Learn a recipe first — the hunt is for its ingredients.', forage_need_quest: 'The inventory / quest engine is not available.', forage_active: 'Foraging — look for:', forage_cancel: 'Cancel this hunt', forage_already_hunting: 'Already hunting these — see the list on the right (search scenes with the 🔍 loupe).', forage_this: 'Hunt only THIS recipe\'s missing ingredients', forage_hint: 'Use the 🔍 loupe on scene messages to find these (better in the right place).',
         craft_section: 'Craft a recipe', craft_recipe_lbl: 'Known recipe:', craft_btn: 'Craft', sharpen_btn: '⚒ Sharpen', sharpen_pick: 'Item to sharpen:', sharpen_choose: '— choose a piece —', sharpen_none: 'No equipped piece is at the right grade for this.', sharpen_noeq: 'Equipment module not available.', sharpen_risky: '⚠ Reaching Legendary can fail (materials are lost).', sharpen_need_target: 'Choose an item to sharpen first.', sharpen_ok: 'Sharpened! Now {grade}.', sharpen_fail: 'The sharpening failed — materials lost.', sharpen_tag: '⚒ → {grade}', sharpen_recipe_desc: 'A reforging procedure that upgrades a {cat} to {grade} (one tier up). Learn it, gather its materials, then sharpen at the bench.', sharpen_cat_weapon: 'weapon', sharpen_cat_armor: 'piece of armour', repair_btn: '🛠 Repair', repair_pick: 'Item to repair:', repair_none: 'Nothing of this kind needs repair.', repair_broken: 'broken', repair_ok: 'Repaired — good as new.', repair_fail: 'Nothing to repair.', repair_tag: '🛠 kit', repair_recipe_desc: 'A repair kit that restores the durability of a {cat}. Learn it, gather materials, then mend at the bench.', craft_need: 'Missing: {list}', craft_none_known: 'Learn a recipe first (Recipes tab).', craft_known_h: 'You can craft:', craft_locked_h: 'Not yet learned:', r_locked_hint: 'Learn in the Recipes tab.', open_bench: '⚗️ Open crafting bench', bench_tabhint: 'Recipes, ingredients and crafting open in a full workbench.', recipes_side: 'Recipes', ingredients_side: 'Ingredients', brew_hint: 'Pick a recipe on the left, or Freestyle to experiment.', cb_perfect: 'Exquisite!', cb_good: 'Good', cb_bad: 'Scorched…', cb_closed: 'Circle closed — hit Craft', cb_fill: 'Close the circle with ingredients', cb_cookhint: 'STOP THE FLAME IN THE GOLD ZONE — tap STOP or Space', cb_stop: 'STOP!', cb_needed: 'needed for the recipe', cb_ingredient: 'ingredient', craft_done: 'Crafted {name}!', craft_run: 'Working the craft...', craft_botched: 'Botched it — got {name} instead.', q_sloppy: 'Too sloppy — no reward. Try again.', craft_err: 'Craft failed — check URL / key / model.', brokendrop_toast: 'A broken {name} fell into your pack — someone could repair it.', brokendrop_qtitle: 'Repair: {name}', brokendrop_qdesc: 'Bring the broken {name} to {vendor} to be mended.', brokendrop_qreq: 'Have {vendor} repair the {name}.', brokendrop_note: '*[{user} finds a broken {name} — best take it to {vendor} the {role} for repair.]*', brokendrop_note_novendor: '*[{user} finds a broken {name} — it needs repairing by a craftsman.]*',
         free_section: 'Experiment (freestyle)', free_hint: 'Pick 2–4 materials and try your luck — result unknown.', free_btn: 'Experiment', free_pick: 'Pick at least 2 materials.', free_success: 'Success! Made {name}.', free_fail: 'It went wrong — {name}.', no_materials: 'No materials in your backpack.',
         mini_title: 'Steady hands...', mini_hint: 'Tap when the marker hits the glowing zone.', mini_tap: 'TAP', mini_left: 'Hits left: {n}', mini_cancel: 'Cancel',
@@ -121,7 +131,7 @@ const I18N = {
     ru: {
         tab_recipes: 'Рецепты', skill_lbl: 'Навык', lvl_short: 'Ур', recipes_gen: '✨ Сгенерировать рецепты (ИИ)', recipes_none: 'Рецептов пока нет — сгенерируй.', recipe_ing: 'Ингредиенты:', recipe_res: 'Результат:', r_learn: 'Изучить', r_known: 'Изучено', recipes_gen_run: 'Вендор набрасывает рецепты...', recipes_gen_done: 'Рецепты добавлены!', recipes_gen_err: 'Не удалось — проверь URL / ключ / модель.', r_learned: 'Изучен «{name}» (+{xp} к навыку).', skill_up: 'Навык «{skill}» вырос до уровня {lvl}!',
         tab_craft: 'Крафт', tab_train: 'Тренировка',
-        ing_section: 'Ингредиенты', ing_gen: '✨ Сгенерировать ингредиенты (ИИ)', ing_none: 'Списка ингредиентов пока нет.', ing_gather: '🔍 Добыть один', ing_where: 'Где:', ing_got: 'Найдено: {name} ({where}).', ing_gen_run: 'Собираю список ингредиентов...', ing_gen_done: 'Ингредиенты добавлены!', ing_need_recipes: 'Сначала сгенерируй рецепты — ингредиенты берутся из них.', ing_goto: '«{name}» находится: {where}. Иди туда, чтобы добыть.', forage_take: '🔎 Взять задание на сбор', forage_run: 'Отмечаю ингредиенты для сбора...', forage_started: 'Задание взято — {n} ингр. Ищи их лупой 🔍 в сценах.', forage_none_missing: 'Всё нужное для этих рецептов у тебя уже есть или уже в поиске.', forage_need_recipe: 'Сначала изучи рецепт — задание собирает его ингредиенты.', forage_need_quest: 'Движок инвентаря/заданий недоступен.', forage_active: 'Сбор — ищи:', forage_hint: 'Наводи лупу 🔍 на сообщения сцены, чтобы найти их (в нужном месте шанс выше).',
+        ing_section: 'Ингредиенты', ing_gen: '✨ Сгенерировать ингредиенты (ИИ)', ing_none: 'Списка ингредиентов пока нет.', ing_gather: '🔍 Добыть один', ing_where: 'Где:', ing_got: 'Найдено: {name} ({where}).', ing_gen_run: 'Собираю список ингредиентов...', ing_gen_done: 'Ингредиенты добавлены!', ing_need_recipes: 'Сначала сгенерируй рецепты — ингредиенты берутся из них.', ing_goto: '«{name}» находится: {where}. Иди туда, чтобы добыть.', forage_take: '🔎 Взять задание на сбор', forage_run: 'Отмечаю ингредиенты для сбора...', forage_started: 'Задание взято — {n} ингр. Ищи их лупой 🔍 в сценах.', forage_none_missing: 'Всё нужное для этих рецептов у тебя уже есть или уже в поиске.', forage_need_recipe: 'Сначала изучи рецепт — задание собирает его ингредиенты.', forage_need_quest: 'Движок инвентаря/заданий недоступен.', forage_active: 'Сбор — ищи:', forage_cancel: 'Отменить этот сбор', forage_already_hunting: 'Эти ингредиенты уже в поиске — список справа (ищи их лупой 🔍 в сценах).', forage_this: 'Искать ингредиенты только ЭТОГО рецепта', forage_hint: 'Наводи лупу 🔍 на сообщения сцены, чтобы найти их (в нужном месте шанс выше).',
         craft_section: 'Скрафтить рецепт', craft_recipe_lbl: 'Изученный рецепт:', craft_btn: 'Скрафтить', sharpen_btn: '⚒ Заточить', sharpen_pick: 'Что точим:', sharpen_choose: '— выбери вещь —', sharpen_none: 'Нет надетой вещи нужного грейда для этого.', sharpen_noeq: 'Модуль экипировки недоступен.', sharpen_risky: '⚠ Заточка до Легендарного может провалиться (материалы сгорят).', sharpen_need_target: 'Сначала выбери, что точить.', sharpen_ok: 'Заточено! Теперь {grade}.', sharpen_fail: 'Заточка провалилась — материалы сгорели.', sharpen_tag: '⚒ → {grade}', sharpen_recipe_desc: 'Обряд перековки: поднимает {cat} до «{grade}» (на ступень выше). Выучи, собери материалы и заточи на верстаке.', sharpen_cat_weapon: 'оружие', sharpen_cat_armor: 'броню', repair_btn: '🛠 Repair', repair_pick: 'Item to repair:', repair_none: 'Nothing of this kind needs repair.', repair_broken: 'broken', repair_ok: 'Repaired — good as new.', repair_fail: 'Nothing to repair.', repair_tag: '🛠 kit', repair_recipe_desc: 'Ремонтный набор: восстанавливает прочность {cat}. Выучи, собери материалы и почини на верстаке.', craft_need: 'Не хватает: {list}', craft_none_known: 'Сначала изучи рецепт (вкладка «Рецепты»).', craft_known_h: 'Можно скрафтить:', craft_locked_h: 'Ещё не изучено:', r_locked_hint: 'Изучи во вкладке «Рецепты».', open_bench: '⚗️ Открыть верстак', bench_tabhint: 'Рецепты, ингредиенты и крафт открываются в отдельном верстаке.', recipes_side: 'Рецепты', ingredients_side: 'Ингредиенты', brew_hint: 'Выбери рецепт слева или Фристайл для эксперимента.', cb_perfect: 'Изысканно!', cb_good: 'Хорошо', cb_bad: 'Подгорело…', cb_closed: 'Круг замкнут — жми «Скрафтить»', cb_fill: 'Замкни круг ингредиентами', cb_cookhint: 'ОСТАНОВИ ПЛАМЯ В ЗОЛОТОЙ ЗОНЕ — жми СТОП или пробел', cb_stop: 'СТОП!', cb_needed: 'нужен для рецепта', cb_ingredient: 'ингредиент', craft_done: 'Скрафчено: {name}!', craft_run: 'Идёт работа...', craft_botched: 'Испортил — вышло «{name}».', q_sloppy: 'Слишком небрежно — без награды. Попробуй ещё.', craft_err: 'Не удалось — проверь URL / ключ / модель.', brokendrop_toast: 'В рюкзак попал сломанный «{name}» — кто-нибудь мог бы его починить.', brokendrop_qtitle: 'Починка: {name}', brokendrop_qdesc: 'Отнеси сломанный «{name}» к {vendor} на починку.', brokendrop_qreq: 'Починить «{name}» у {vendor}.', brokendrop_note: '*[{user} находит сломанный «{name}» — стоит отнести его на починку к {vendor} ({role}).]*', brokendrop_note_novendor: '*[{user} находит сломанный «{name}» — его нужно починить у мастера.]*',
         free_section: 'Эксперимент (без рецепта)', free_hint: 'Выбери 2–4 материала и попытай удачу — результат неизвестен.', free_btn: 'Поэкспериментировать', free_pick: 'Выбери минимум 2 материала.', free_success: 'Успех! Получилось: {name}.', free_fail: 'Не вышло — {name}.', no_materials: 'В рюкзаке нет материалов.',
         mini_title: 'Твёрдая рука...', mini_hint: 'Жми, когда бегунок в светящейся зоне.', mini_tap: 'ЖМИ', mini_left: 'Осталось: {n}', mini_cancel: 'Отмена',
@@ -684,13 +694,13 @@ Output strictly JSON: {"quests":[{"type":"fetch","title":"","desc":"","requireme
         const arr = Array.isArray(res.quests) ? res.quests : [];
         let added = 0;
         for (const q of arr.slice(0, 5)) {
-            const title = String(q.title || '').trim(); const requirement = String(q.requirement || '').trim();
-            if (!title || !requirement) continue; // skip malformed/empty quests — never show a blank card
+            const title = aiName(q.title, null, 80); const requirement = aiName(q.requirement, null, 200);
+            if (!title || !requirement) continue; // empty OR junk ("-1") — never show a broken card
             const rk = (q.reward && ['item', 'repair', 'buff', 'coins'].includes(q.reward.kind)) ? q.reward.kind : 'item';
             state.quests.push({
                 id: genId(), vendorId: vendor.id, type: q.type || 'fetch',
                 title, desc: String(q.desc || ''), requirement,
-                reward: { kind: rk, name: String(q.reward && q.reward.name || 'Material'), effect: String(q.reward && q.reward.effect || ''), amount: parseInt(q.reward && q.reward.amount) || 25 },
+                reward: { kind: rk, name: aiName(q.reward && q.reward.name, 'Material', 50), effect: String(q.reward && q.reward.effect || ''), amount: parseInt(q.reward && q.reward.amount) || 25 },
                 status: 'available'
             });
             added++;
@@ -794,7 +804,8 @@ Output strictly JSON: {"goods":[{"name":"","type":"misc","desc":"","price":10,"w
         const temp = Math.min(1.15, (typeof settings.temperature === 'number' ? settings.temperature : 0.7) + 0.25);
         const res = await callAI(sys, settingContext(), temp);
         if (!ownsChat(myChat)) return;   // chat changed during the restock
-        const goods = Array.isArray(res.goods) ? res.goods : [];
+        let goods = Array.isArray(res.goods) ? res.goods : [];
+        goods = goods.filter(g => { if (!g) return false; const n = aiName(g.name); if (!n) return false; g.name = n; return true; });
         vendor.stock = goods.slice(0, 8).map(g => ({ id: genId(), name: String(g.name || 'Item'), type: String(g.type || 'misc'), desc: String(g.desc || ''), price: Math.max(1, parseInt(g.price) || 10), weight: (typeof g.weight === 'number' && g.weight > 0) ? g.weight : undefined, heal: (typeof g.heal === 'number' && g.heal > 0) ? g.heal : undefined, food: (typeof g.food === 'number' && g.food > 0) ? g.food : undefined, buff: (g.buff && g.buff.name) ? { name: String(g.buff.name), effect: String(g.buff.effect || ''), duration: (typeof g.buff.duration === 'number' && g.buff.duration > 0) ? g.buff.duration : null } : undefined }));
         // fold the fresh names into memory too
         vendor.stock.forEach(s => { const n = String(s.name || '').trim(); if (n && !vendor.seenGoods.some(x => x.toLowerCase() === n.toLowerCase())) vendor.seenGoods.push(n); });
@@ -890,12 +901,15 @@ Output strictly JSON: {"skill":"","recipes":[{"name":"","stars":1,"ingredients":
             return out;
         };
         const built = recs.slice(0, 8).map(r => {
+            const rname = aiName(r && r.name);
+            if (!rname) return null;                // junk recipe ("-1") — drop it entirely
             const stars = clampStars(r.stars);
-            const ings = Array.isArray(r.ingredients) ? r.ingredients.map(x => String(x)).filter(Boolean).slice(0, 8) : [];
+            const ings = Array.isArray(r.ingredients) ? r.ingredients.map(x => aiName(x, null, 50)).filter(Boolean).slice(0, 8) : [];
+            if (!ings.length) return null;          // a recipe with only junk ingredients is unusable
             const floor = [0, 15, 35, 60, 100, 150][stars];
             const price = Math.max(parseInt(r.price) || 0, floor + Math.floor(Math.random() * Math.round(floor * 0.6)));
-            return { id: genId(), name: String(r.name || 'Recipe').slice(0, 60), stars, ingredients: ings, flavor: String(r.flavor || '').slice(0, 160), result: String(r.result || '').slice(0, 200), price, effect: parseEffect(r.effect), learned: false };
-        });
+            return { id: genId(), name: rname, stars, ingredients: ings, flavor: String(r.flavor || '').slice(0, 160), result: String(r.result || '').slice(0, 200), price, effect: parseEffect(r.effect), learned: false };
+        }).filter(Boolean);
         const have = new Set((v.recipes || []).map(r => String(r.name).toLowerCase()));
         v.recipes = (v.recipes || []).concat(built.filter(r => !have.has(r.name.toLowerCase())));
         await generateSharpenRecipes(v);
@@ -990,7 +1004,7 @@ Strictly ${genLang()}. Output JSON: {"name":"","type":"food","debuff":{"name":""
         const type = types.includes(res.type) ? res.type : (types.includes(typeHint) ? typeHint : 'misc');
         const db = res.debuff || {};
         const worn = (type === 'weapon' || type === 'armor' || type === 'clothing');
-        const item = { name: String(res.name || 'Botched item').slice(0, 60), desc: String(db.effect || '').slice(0, 120), type };
+        const item = { name: aiName(res.name, 'Botched item', 60), desc: String(db.effect || '').slice(0, 120), type };
         if (db.name) item.buff = { name: String(db.name).slice(0, 40), effect: String(db.effect || '').slice(0, 90), kind: 'debuff', duration: worn ? null : Math.max(1, parseInt(db.duration) || 3) };
         if (type === 'food') item.food = 3; // bad food barely fills
         inv.add(item);
@@ -1057,8 +1071,11 @@ For EACH ingredient name below (used in your recipes), give a very short "desc" 
 Ingredients: ${names.join(', ')}.
 ${roomList.length ? `For "where", CHOOSE the single most fitting place from THIS list of existing locations, copied verbatim — do NOT invent new places: ${roomList.join(' | ')}.` : `For "where", give a brief GENERIC place hint (e.g. "in a kitchen", "by the river"); do not invent specific room names.`}
 Write strictly in ${genLang()}. Output JSON: {"ingredients":[{"name":"","desc":"","where":""}]}`;
-    const res = await callAI(sys, settingContext());
-    const got = {}; (Array.isArray(res.ingredients) ? res.ingredients : []).forEach(g => { if (g && g.name) got[String(g.name).toLowerCase()] = g; });
+    let res = null;
+    try { res = await callAI(sys, settingContext()); } catch (e) { console.error('ingredient info error:', e); }
+    // even if the AI call failed, the hunt must still start — just without the "where" hints
+    // (this is the "loupe pressed, nothing appeared, only 'search running'" bug)
+    const got = {}; (res && Array.isArray(res.ingredients) ? res.ingredients : []).forEach(g => { if (g && g.name) got[String(g.name).toLowerCase()] = g; });
     return names.map(nm => {
         const g = got[nm.toLowerCase()] || {};
         const where = String(g.where || '').slice(0, 80);
@@ -1070,20 +1087,26 @@ Write strictly in ${genLang()}. Output JSON: {"ingredients":[{"name":"","desc":"
 
 // Take a hunt for the ingredients your LEARNED recipes still need. The loupe then turns them
 // up while you search messages (see the engine). Buying from the shop stays as the quick path.
-async function takeForageQuest(v) {
+async function takeForageQuest(v, onlyRecipe = null) {
     if (!settings.enabled) return;
     ensureRecipes(v); ensureSkill(v);
     const q = questApi();
     if (!q) { toastr.warning(t('forage_need_quest')); return; }
     const inv = invApi();
-    const learned = (v.recipes || []).filter(r => r.learned);
-    if (!learned.length) { toastr.warning(t('forage_need_recipe')); return; }
+    // targeted mode: the loupe on a specific recipe hunts ONLY that recipe's ingredients
+    const learned = onlyRecipe ? [onlyRecipe] : (v.recipes || []).filter(r => r.learned);
+    if (!learned.length || (onlyRecipe && !onlyRecipe.learned)) { toastr.warning(t('forage_need_recipe')); return; }
     const need = new Map();
-    learned.forEach(r => (r.ingredients || []).forEach(n => { const nm = String(n || '').trim(); if (nm) need.set(ingKey(nm), nm); }));
+    learned.forEach(r => (r.ingredients || []).forEach(n => { const nm = aiName(n, null, 50); if (nm) need.set(ingKey(nm), nm); }));
     const have = new Set((inv ? inv.list() : []).map(i => ingKey(i.name)));
     const hunting = new Set((q.neededNames ? q.neededNames() : []).map(ingKey));
     const missing = [...need.keys()].filter(k => !have.has(k) && !hunting.has(k)).map(k => need.get(k));
-    if (!missing.length) { toastr.info(t('forage_none_missing')); return; }
+    if (!missing.length) {
+        const anyHunted = [...need.keys()].some(k => hunting.has(k));
+        toastr.info(t(anyHunted ? 'forage_already_hunting' : 'forage_none_missing'));
+        afterCraftChange();   // make sure the active-hunt list is on screen
+        return;
+    }
     toastr.info(t('forage_run'));
     const myChat = currentChatId;
     try {
@@ -1092,7 +1115,9 @@ async function takeForageQuest(v) {
         // keep the BUY path alive too — stock a few (kept small on purpose, not a spam list)
         if (!Array.isArray(v.stock)) v.stock = [];
         info.slice(0, 3).forEach(ing => { if (!v.stock.some(sx => sameIng(sx.name, ing.name))) v.stock.push({ id: genId(), name: ing.name, type: 'material', desc: ing.desc, price: Math.max(2, Math.floor(Math.random() * 8) + 3) }); });
-        v.ingredients = info; // remember where-hints on the vendor for the panel
+        // merge where-hints (a targeted hunt must not wipe hints gathered for other recipes)
+        if (!Array.isArray(v.ingredients)) v.ingredients = [];
+        info.forEach(ing => { const i = v.ingredients.findIndex(x => sameIng(x.name, ing.name)); if (i >= 0) v.ingredients[i] = ing; else v.ingredients.push(ing); });
         const res = q.addForage({ vendorName: v.name, skill: v.skill.name, chance: forageChance(v.skill.level), ingredients: info });
         saveState(); afterCraftChange();
         if (res) toastr.success(t('forage_started', { n: res.count })); else toastr.warning(t('craft_err'));
@@ -1280,7 +1305,7 @@ Strictly ${genLang()}. Output JSON: {"fits":true,"name":"","type":"consumable","
         if (eff.name) item.buff = { name: String(eff.name).slice(0, 40), effect: String(eff.effect || '').slice(0, 90), kind: success ? 'buff' : 'debuff', duration: worn ? null : Math.max(1, parseInt(eff.duration) || 3) };
         if (type === 'food') item.food = success ? (8 + Math.floor(Math.random() * 10)) : 3;
         if (inv) inv.add(item);
-        const rn = res.name || eff.name || '?';
+        const rn = aiName(res.name) || aiName(eff.name) || '?';
         if (success) toastr.success(t('free_success', { name: escapeHtml(rn) })); else toastr.warning(t('free_fail', { name: escapeHtml(rn) }));
         if (onDone) onDone(success, rn);
         return { success, name: rn };
@@ -1582,7 +1607,6 @@ function mountCraft(body, v) {
         if (benchSlotsFor !== benchSel) cbBuildSlots(v);
     } catch (e) { console.error('[Vendors] craft setup failed:', e); benchSel = 'free'; benchSlots = []; }
     cbRenderAll(v);
-    body.find('.vc-forage').off('click').on('click', () => takeForageQuest(v));
 }
 function cbEl(id) { return document.getElementById(id); }
 
@@ -1605,7 +1629,7 @@ function cbRenderRecipes(v) {
             const isSp = r.kind === 'sharpen', isRp = r.kind === 'repair';
             const mk = isSp ? '⚒ ' : (isRp ? '🛠 ' : '');
             const tag = isSp ? escapeHtml(t('sharpen_tag', { grade: t('grade_' + r.targetGrade) })) : (isRp ? escapeHtml(t('repair_tag')) : '★'.repeat(r.stars));
-            html += `<button class="recipe ${benchSel === r.id ? 'sel' : ''}" data-r="${r.id}"><div class="rn"><span class="mark">${mk}${escapeHtml(r.name)}</span></div><span class="rtag">${tag}</span>${r.result ? `<div class="rdesc">${escapeHtml(r.result)}</div>` : ''}<div class="rneed-h">${escapeHtml(t('recipe_ing'))}</div><div class="needs2">${needs2}</div></button>`;
+            html += `<button class="recipe ${benchSel === r.id ? 'sel' : ''}" data-r="${r.id}"><div class="rn"><span class="mark">${mk}${escapeHtml(r.name)}</span><span class="rhunt" data-hunt="${r.id}" title="${escapeHtml(t('forage_this'))}">🔎</span></div><span class="rtag">${tag}</span>${r.result ? `<div class="rdesc">${escapeHtml(r.result)}</div>` : ''}<div class="rneed-h">${escapeHtml(t('recipe_ing'))}</div><div class="needs2">${needs2}</div></button>`;
         } else {
             // unlearned: ingredients stay hidden until the recipe is learned
             html += `<div class="recipe locked"><div class="rn">🔒 ${escapeHtml(r.name)} <span class="rtag">${'★'.repeat(r.stars)}</span></div><div class="rlock">${escapeHtml(t('r_locked_hint'))}</div></div>`;
@@ -1614,6 +1638,11 @@ function cbRenderRecipes(v) {
     if (!recs.length) html += `<div class="cb-empty">${escapeHtml(t('craft_none_known'))}</div>`;
     box.innerHTML = html;
     box.querySelectorAll('.recipe[data-r]').forEach(b => b.onclick = () => craftSelect(v, b.dataset.r));
+    box.querySelectorAll('.rhunt').forEach(el => el.onclick = (e) => {
+        e.stopPropagation();   // don't also select the recipe
+        const r = (v.recipes || []).find(x => x.id === el.dataset.hunt);
+        if (r) takeForageQuest(v, r);
+    });
     const fb = box.querySelector('.recipe[data-free]'); if (fb) fb.onclick = () => craftSelect(v, 'free');
 }
 
@@ -1699,11 +1728,24 @@ function cbRenderInv(v) {
     const fl = cbEl('vc-forage-list');
     if (fl) {
         const q = questApi();
-        const pend = [];
-        if (q) (q.listForage() || []).filter(x => x.vendorName === v.name).forEach(x => (x.ingredients || []).forEach(i => { if (!i.got) pend.push(i); }));
-        if (pend.length) {
-            fl.innerHTML = `<div class="fq-h">${escapeHtml(t('forage_active'))}</div>` + pend.slice(0, 12).map(i => `<div class="fq-row"><b>${escapeHtml(i.name)}</b>${i.where ? `<span>${escapeHtml(i.where)}</span>` : ''}</div>`).join('') + `<div class="fq-note">${escapeHtml(t('forage_hint'))}</div>`;
+        // all active hunts, whoever they were taken from — the loupe works globally, and the old
+        // per-vendor filter made a hunt taken elsewhere invisible ("hunting… but the list is empty")
+        const rows = [];
+        if (q) (q.listForage() || []).forEach(x => {
+            const pend = (x.ingredients || []).filter(i => !i.got);
+            if (pend.length) rows.push({ id: x.id, pend });
+        });
+        if (rows.length) {
+            fl.innerHTML = `<div class="fq-h">${escapeHtml(t('forage_active'))}</div>` + rows.map(r =>
+                `<div class="fq-quest"><span class="fq-x" data-fq="${r.id}" title="${escapeHtml(t('forage_cancel'))}">✕</span>` +
+                r.pend.slice(0, 12).map(i => `<div class="fq-row"><b>${escapeHtml(i.name)}</b>${i.where ? `<span>${escapeHtml(i.where)}</span>` : ''}</div>`).join('') +
+                `</div>`).join('') + `<div class="fq-note">${escapeHtml(t('forage_hint'))}</div>`;
             fl.style.display = '';
+            fl.querySelectorAll('.fq-x').forEach(el => el.onclick = () => {
+                const qq = questApi();
+                if (qq && qq.removeForage) qq.removeForage(el.dataset.fq);
+                afterCraftChange();
+            });
         } else { fl.innerHTML = ''; fl.style.display = 'none'; }
     }
     box.querySelectorAll('.ing:not(.empty)').forEach(el => {
@@ -2207,7 +2249,7 @@ function tabHtml(v) {
             h += `<div class="rpg-cb"><div class="tri">
                 <div class="col side rec"><div class="col-h" id="vc-rech"></div><div class="rlist" id="vc-rlist"></div></div>
                 <div class="col bench"><div class="bench-in" id="vc-bench"></div></div>
-                <div class="col side ing"><div class="col-h" id="vc-ingh"></div><div class="cb-iact"><button class="vnf-btn b-violet vc-forage">${ic('wand')}${escapeHtml(t('forage_take'))}</button></div><div class="vc-forage-list" id="vc-forage-list"></div><div class="igrid" id="vc-igrid"></div></div>
+                <div class="col side ing"><div class="col-h" id="vc-ingh"></div><div class="vc-forage-list" id="vc-forage-list"></div><div class="igrid" id="vc-igrid"></div></div>
             </div></div>`;
         }
     }
@@ -2254,7 +2296,6 @@ function wireTabBody(body, v) {
     body.find('.vnf-genrec').off('click').on('click', () => generateRecipes(v));
     body.find('.vnf-learn').off('click').on('click', function () { learnRecipe(v, $(this).data('id')); });
     // craft / ingredients / training
-    body.find('.vnf-forage').off('click').on('click', () => takeForageQuest(v));
     body.find('.vnf-craftbtn').off('click').on('click', function () { craftRecipe(v, $(this).data('id')); });
     body.find('.vnf-matcb').off('change').on('change', function () { const n = body.find('.vnf-matcb:checked').length; body.find('.vnf-freebtn').prop('disabled', n < 2); });
     body.find('.vnf-freebtn').off('click').on('click', () => { const ids = body.find('.vnf-matcb:checked').map(function () { return $(this).val(); }).get(); freestyleCraft(v, ids); });
@@ -2407,7 +2448,8 @@ async function maybeDropBrokenGear() {
         const sys = `Invent ONE ${pick[1]} the character stumbles on at the start of a scene, fitting the WORLD/ERA/setting below. Give a short "name" and a one-line "desc". Write in ${genLang()}. Output JSON: {"name":"","desc":""}`;
         const res = await callAI(sys, settingContext());
         if (!ownsChat(myChat)) return;          // chat changed during the request
-        const name = String((res && res.name) || 'Broken item').slice(0, 50);
+        const name = aiName(res && res.name, null, 50);
+        if (!name) return;                          // junk from the model ("-1") — no drop at all
         const desc = String((res && res.desc) || '').slice(0, 120);
         inv.add({ name, desc, type: pick[0], dur: 0, max: 100, broken: true, grade: (Math.random() < 0.15 ? 3 : (Math.random() < 0.4 ? 2 : 1)) });
         if (vendors.length) {

@@ -614,3 +614,13 @@
 #rpg-vnd-mini .vm-zoneA { fill:none; stroke:var(--pg-gold); stroke-width:11; stroke-linecap:round; filter:drop-shadow(0 0 4px rgba(201,164,74,.85)); }
 #rpg-vnd-mini .vm-dot { fill:var(--pg-plum); stroke:#fff; stroke-width:2; }
 #rpg-vnd-mini .vm-dot.hit { fill:var(--pg-green); }
+
+/* per-recipe ingredient hunt loupe */
+.rlist .recipe .rn { display: flex; align-items: center; gap: 6px; }
+.rlist .recipe .rhunt { margin-left: auto; opacity: .55; cursor: pointer; font-size: 13px; padding: 2px 4px; border-radius: 6px; }
+.rlist .recipe .rhunt:hover { opacity: 1; background: rgba(255,255,255,.12); }
+
+/* hunt list: per-quest block with a cancel cross */
+.vc-forage-list .fq-quest { position: relative; padding: 4px 22px 4px 6px; margin: 3px 0; border-radius: 8px; background: rgba(139, 92, 246, .08); border: 1px dashed rgba(139, 92, 246, .35); }
+.vc-forage-list .fq-x { position: absolute; top: 3px; right: 6px; cursor: pointer; opacity: .5; font-size: 12px; }
+.vc-forage-list .fq-x:hover { opacity: 1; }
