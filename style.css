@@ -624,3 +624,11 @@
 .vc-forage-list .fq-quest { position: relative; padding: 4px 22px 4px 6px; margin: 3px 0; border-radius: 8px; background: rgba(139, 92, 246, .08); border: 1px dashed rgba(139, 92, 246, .35); }
 .vc-forage-list .fq-x { position: absolute; top: 3px; right: 6px; cursor: pointer; opacity: .5; font-size: 12px; }
 .vc-forage-list .fq-x:hover { opacity: 1; }
+
+/* hunt list must never stretch the panel and push the ingredient grid out of sight:
+   past ~2 recipes' worth of rows it scrolls inside itself instead */
+.vc-forage-list { max-height: 168px; overflow-y: auto; overscroll-behavior: contain; padding-right: 3px; }
+.vc-forage-list::-webkit-scrollbar { width: 7px; }
+.vc-forage-list::-webkit-scrollbar-track { background: rgba(120, 90, 50, .1); border-radius: 5px; }
+.vc-forage-list::-webkit-scrollbar-thumb { background: #c2b288; border-radius: 5px; }
+.vc-forage-list::-webkit-scrollbar-thumb:hover { background: #b3a075; }
