@@ -61,31 +61,6 @@ Copy the `RPG-Vendors-Workshops` folder into your third‑party extensions folde
 2. Fill in an OpenAI‑compatible **URL / API Key / Model** (default `google/gemma-4-31b-it`).
 3. Optional toggles: **write quest/shop notes into the chat**, and **field lessons require an AI review** (hides "I did it").
 4. Create a vendor from a character card (name / type / description — there's a **Generate description** helper), then use its tabs.
-
-## 🔌 Cross‑extension bridges it uses
-
-- `window.RPG.inventory` — items, coins, and `update()` for grades in the backpack.
-- `window.RPG.quest` — starts foraging hunts the magnifier can fulfil.
-- `window.RPG.equipment` — `sharpenable / getGrade / sharpen / repair` for grades & mending.
-- `window.RPG.vitals` — buffs/perks, healing, permanent (`duration:null`) rewards, `setHp`.
-- `window.RPG.map` — assigns ingredients to real rooms so foraging is location‑aware.
-
-Anything missing is simply skipped — the module degrades gracefully.
-
-## 🌍 Language & saving
-
-Bilingual (RU / EN); all state saved per chat.
-
-## 🩺 Troubleshooting
-
-- **Vendors are lost when a solo chat is converted to a group.** Fixed in 1.34.0. Vendors are now backed up inside the chat itself (`rpg_vendors_checkpoint` on the last message), the same way the Engine backs up the backpack, so the copied messages carry the shop into the group chat. For chats converted before this release the vendor list offers a **"Carry vendors over from another chat"** picker, which copies the vendors and their quests across.
-- **The "Generate" button in the vendor form does nothing.** Fixed in 1.33.1. It read the form through outdated `rpg-vnd-f-*` selectors after the markup had moved to `vnf-*` / `#vf-*`, so the lookups returned nothing and the handler threw before any request was sent.
-- **The bench falls back to Freestyle and recipe slots are not built.** Fixed in 1.33.0. `ensureIngredients()` was called but never defined, so opening the workbench threw and reset the selected recipe.
-- **A recipe reports a missing ingredient that is present in the backpack.** Fixed in 1.33.0. Ingredient names are matched through a normalised, stemmed, order-independent key (`sulfur alloy` satisfies `alloy of sulfur`). This applies to the bench slots, the availability chips, the craft check and the foraging hunt.
-- **Vendors and quests leak between chats.** Fixed in 1.33.0. Vendor state is owned by a single chat and is not written into another while SillyTavern is switching.
-
-- **The Craft tab was blank.** Fixed in 1.27.1 — each column renders independently, so one hiccup can't blank the tab (details land in the console).
-- **The extension icon/settings vanished after an update.** Fixed in 1.29.1 — a duplicate function broke module load; the build is now validated as an ES module.
 - **Sharpen/repair recipes looked empty.** Fixed in 1.32.0 — they now show a clear description; their ingredients still stay hidden until learned.
 - **"Reward:" toast was empty.** Fixed in 1.30.x — a duplicated i18n key was overriding the reward text.
 - **Learning a recipe at one vendor changed another.** Vendors are independent; 1.29.0 also hardened editing so per‑vendor recipes/skill/training are never wiped.
