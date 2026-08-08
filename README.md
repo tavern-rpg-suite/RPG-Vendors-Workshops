@@ -4,7 +4,7 @@ A SillyTavern extension that fills your world with **vendors, crafters and train
 
 > Part of the RPG suite. It plugs into the **Inventory** (`window.RPG.inventory` / `window.RPG.quest`), **Equipment** (`window.RPG.equipment`), **Vitals** (`window.RPG.vitals`) and **Map** (`window.RPG.map`) modules when they're present, and works with whatever subset you have installed.
 
-**Version 1.34.0**
+**Version 1.34.6**
 
 ---
 
