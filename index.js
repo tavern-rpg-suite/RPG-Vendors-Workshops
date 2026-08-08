@@ -14,6 +14,7 @@ const defaultSettings = {
     apiKey: '',
     model: 'google/gemma-4-31b-it',
     temperature: 0.8,
+    strictJson: true,
     language: 'en',
     injectDepth: 2,
     cardInject: true,
@@ -402,19 +403,88 @@ function sameIng(a, b) { return !!a && !!b && ingKey(a) === ingKey(b); }
 // Vendors keep a catalogue of ingredient info; make sure the array exists before it is read.
 function ensureIngredients(v) { if (!Array.isArray(v.ingredients)) v.ingredients = []; return v.ingredients; }
 
+/* ------------------------------------------------------------
+   ENDPOINT HANDLING — reaching the server only. Nothing about what is sent,
+   how a reply is read, or any of the vendor logic.
+
+   1. An empty key falls back to Tavern RPG Engine's, so the same key does not
+      have to be pasted into every module. An address YOU typed always wins:
+      borrowing takes only what is missing, and never the URL. A local backend
+      needs no key at all, so a placeholder is used instead of a borrowed one.
+   2. OpenAI-style backends live under /v1. Leave it off — "http://localhost:1234"
+      — and the request goes to /chat/completions, which LM Studio and KoboldCpp
+      answer with "Unexpected endpoint or method".
+   3. response_format is an OpenAI parameter, not a standard one. KoboldCpp turns
+      it into a grammar that forbids anything but an object, so a model opening
+      with "[" bails out with EOS after a few tokens. Local backends do not get
+      it — the reply is pulled out with a regex anyway.
+   ------------------------------------------------------------ */
+const KEY_SOURCES = ['tavern_rpg_engine'];
+function normalizeBase(url) {
+    let u = String(url || '').trim().replace(/\s+/g, '');
+    if (!u) return u;
+    u = u.replace(/\/+$/, '');
+    u = u.replace(/\/(chat\/completions|completions|images|images\/generations|embeddings)$/i, '');
+    if (!/\/v\d+($|\/)/i.test(u)) u += '/v1';
+    return u;
+}
+function isLocalEndpoint(url) {
+    const u = String(url || '').toLowerCase();
+    if (!u) return false;
+    return /(^|\/\/)(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]|host\.docker\.internal)([:/]|$)/.test(u)
+        || /:(5001|5000|8080|8000|1234|11434|5002)(\/|$)/.test(u)
+        || /192\.168\.|10\.\d+\.|172\.(1[6-9]|2\d|3[01])\./.test(u);
+}
+function wantsStrictJson(url) {
+    if (settings.strictJson === false) return false;
+    return !isLocalEndpoint(url);
+}
+function borrowedRaw() {
+    for (const src of KEY_SOURCES) {
+        if (src === MODULE_NAME) continue;
+        try {
+            const x = extension_settings[src];
+            if (x && x.apiKey && x.model) return { url: x.baseUrl, key: x.apiKey, model: x.model, from: src };
+        } catch (e) { /* a neighbour with broken settings must not break us */ }
+    }
+    return { url: '', key: '', model: '', from: null };
+}
+function apiConf() {
+    const own = String(settings.baseUrl || '').trim();
+    const ownKey = String(settings.apiKey || '').trim();
+    const ownModel = String(settings.model || '').trim();
+    if (own) {
+        const local = isLocalEndpoint(own);
+        const b = (ownKey && ownModel) ? { key: '', model: '', from: null } : borrowedRaw();
+        return {
+            url: own,
+            key: ownKey || (local ? 'local' : b.key),
+            model: ownModel || (local ? '' : b.model),
+            from: ownKey ? null : (local ? null : b.from)
+        };
+    }
+    if (ownKey && ownModel) return { url: '', key: ownKey, model: ownModel, from: null };
+    const b = borrowedRaw();
+    return b.key ? b : { url: '', key: ownKey, model: ownModel, from: null };
+}
+function apiKey() { return apiConf().key || ''; }
+function apiUrl() { return normalizeBase(apiConf().url) || 'https://openrouter.ai/api/v1'; }
+function apiModel() { return apiConf().model || ''; }
+function borrowedFrom() { return apiConf().from; }
+
 async function callAI(systemPrompt, userPrompt, tempOverride) {
-    if (!settings.apiKey) throw new Error('API key is not set');
-    const url = (settings.baseUrl || 'https://openrouter.ai/api/v1').replace(/\/$/, '') + '/chat/completions';
+    if (!apiKey()) throw new Error('API key is not set');
+    const url = apiUrl() + '/chat/completions';
     for (let i = 0; i < 2; i++) {
         try {
             const res = await fetch(url, {
                 method: 'POST',
-                headers: { 'Authorization': `Bearer ${settings.apiKey.trim()}`, 'Content-Type': 'application/json' },
+                headers: { 'Authorization': `Bearer ${apiKey().trim()}`, 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    model: settings.model,
+                    model: apiModel(),
                     messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userPrompt }],
                     temperature: (typeof tempOverride === 'number') ? tempOverride : settings.temperature,
-                    response_format: { type: 'json_object' }
+                    ...(wantsStrictJson(url) ? { response_format: { type: 'json_object' } } : {})
                 })
             });
             if (res.status === 429 && i === 0) { await new Promise(r => setTimeout(r, 2000)); continue; }
