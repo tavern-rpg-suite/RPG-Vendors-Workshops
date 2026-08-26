@@ -732,7 +732,7 @@ Respond strictly JSON: {"logical": true/false, "amount": <integer 0-100, percent
         } else {
             toastr.warning(t('toast_rejected', { vendor: escapeHtml(vendor.name), reason: escapeHtml(res.reason || '') }));
         }
-        renderPanel();
+        refreshPanel();
     } catch (e) { toastr.error(t('toast_repair_err')); }
 }
 
@@ -775,7 +775,7 @@ Output strictly JSON: {"quests":[{"type":"fetch","title":"","desc":"","requireme
             });
             added++;
         }
-        saveState(); renderPanel();
+        saveState(); refreshTab();
         if (added) toastr.success(t('q_gen_done')); else toastr.error(t('q_gen_err'));
     } catch (e) { toastr.error(t('q_gen_err')); }
 }
@@ -784,15 +784,15 @@ function acceptQuest(id) {
     const q = findQuest(id); if (!q) return;
     const vp = state.vendors.find(x => x.id === q.vendorId);
     if (!vendorPresent(vp)) { toastr.warning(t('not_present', { vendor: escapeHtml(vp ? vp.name : '?') })); return; }
-    q.status = 'active'; saveState(); buildInjection(); renderPanel();
+    q.status = 'active'; saveState(); buildInjection(); refreshTab();
     if (settings.autoChatNote) {
         const v = state.vendors.find(x => x.id === q.vendorId);
         insertChatNote(t('cn_accept', { user: getContext().name1 || 'I', vendor: v ? v.name : '?', role: v ? vendorRole(v).toLowerCase() : 'vendor', title: q.title, req: q.requirement, reward: rewardText(q.reward) }));
     }
     toastr.success(t('q_accepted'));
 }
-function abandonQuest(id) { state.quests = state.quests.filter(q => q.id !== id); saveState(); buildInjection(); renderPanel(); toastr.info(t('q_abandoned')); }
-function failQuest(id) { const q = findQuest(id); if (!q) return; q.status = 'failed'; saveState(); buildInjection(); renderPanel(); toastr.warning(t('q_failed')); }
+function abandonQuest(id) { state.quests = state.quests.filter(q => q.id !== id); saveState(); buildInjection(); refreshTab(); toastr.info(t('q_abandoned')); }
+function failQuest(id) { const q = findQuest(id); if (!q) return; q.status = 'failed'; saveState(); buildInjection(); refreshTab(); toastr.warning(t('q_failed')); }
 function insertChatNote(text) {
     const ctx = getContext();
     try {
@@ -845,7 +845,7 @@ function completeQuest(id) {
     } else {
         toastr.success(t('q_done_plain', { reward: escapeHtml(rewardText(q.reward)) }));
     }
-    q.status = 'done'; saveState(); buildInjection(); renderPanel();
+    q.status = 'done'; saveState(); buildInjection(); refreshTab();
     if (settings.autoChatNote) {
         const v = state.vendors.find(x => x.id === q.vendorId);
         insertChatNote(t('cn_done', { user: getContext().name1 || 'I', vendor: v ? v.name : '?', role: v ? vendorRole(v).toLowerCase() : 'vendor', title: q.title, reward: rewardText(q.reward) }));
@@ -880,7 +880,7 @@ Output strictly JSON: {"goods":[{"name":"","type":"misc","desc":"","price":10,"w
         // fold the fresh names into memory too
         vendor.stock.forEach(s => { const n = String(s.name || '').trim(); if (n && !vendor.seenGoods.some(x => x.toLowerCase() === n.toLowerCase())) vendor.seenGoods.push(n); });
         if (vendor.seenGoods.length > 60) vendor.seenGoods = vendor.seenGoods.slice(-60);
-        saveState(); renderPanel(); toastr.success(t('shop_gen_done'));
+        saveState(); refreshPanel(); toastr.success(t('shop_gen_done'));
     } catch (e) { toastr.error(t('shop_gen_err')); }
 }
 function buyGood(vendor, goodId) {
@@ -891,7 +891,7 @@ function buyGood(vendor, goodId) {
     if (!inv.spendCoins(good.price)) { toastr.warning(t('not_enough')); return; }
     inv.add({ name: good.name, desc: good.desc, type: good.type, weight: good.weight, heal: good.heal, food: good.food, buff: good.buff });
     toastr.success(t('bought', { name: escapeHtml(good.name) }));
-    renderPanel();
+    refreshTab();
 }
 function sellItem(invId) {
     const inv = invApi();
@@ -901,7 +901,7 @@ function sellItem(invId) {
     const val = sellValue(it);
     inv.remove(invId); inv.addCoins(val);
     toastr.success(t('sold', { name: escapeHtml(it.name), n: val }));
-    renderPanel();
+    refreshTab();
 }
 function giveCoins(vendor, amt) {
     const inv = invApi();
@@ -910,7 +910,7 @@ function giveCoins(vendor, amt) {
     if (!inv.spendCoins(amt)) { toastr.warning(t('not_enough')); return; }
     insertChatNote(t('cn_give', { user: getContext().name1 || 'I', vendor: vendor.name, n: amt }));
     toastr.success(t('gave', { n: amt, vendor: escapeHtml(vendor.name) }));
-    renderPanel();
+    refreshTab();
 }
 // ============================ SKILLS & RECIPES ============================
 const MAX_SKILL_LEVEL = 5;
@@ -983,7 +983,7 @@ Output strictly JSON: {"skill":"","recipes":[{"name":"","stars":1,"ingredients":
         const have = new Set((v.recipes || []).map(r => String(r.name).toLowerCase()));
         v.recipes = (v.recipes || []).concat(built.filter(r => !have.has(r.name.toLowerCase())));
         await generateSharpenRecipes(v);
-        saveState(); renderPanel(); toastr.success(t('recipes_gen_done'));
+        saveState(); refreshPanel(); toastr.success(t('recipes_gen_done'));
     } catch (e) { console.error('Recipe gen error:', e); toastr.error(t('recipes_gen_err')); }
 }
 // blacksmiths/tailors also get SHARPENING recipes — one per target grade (→2/→3/→4), rarer materials each step
@@ -1029,7 +1029,7 @@ function learnRecipe(v, id) {
     r.learned = true;
     const gained = 10 + r.stars * 5;
     addSkillXp(v, gained);
-    saveState(); renderPanel();
+    saveState(); refreshPanel();
     toastr.success(t('r_learned', { name: escapeHtml(r.name), xp: gained }));
 }
 
@@ -1401,7 +1401,7 @@ function grantTrainingReward(v, beforeLevel) {
     toastr.success(t('train_perk_got', { skill: escapeHtml(v.skill.name) }));
 }
 // FREE, story-driven: log a sparring win from the RP. Raises the level WITHOUT paying (no special reward).
-function sparWin(v) { ensureSkill(v); addSkillXp(v, 15); saveState(); renderPanel(); afterCraftChange(); toastr.success(t('train_story', { xp: 15, skill: escapeHtml(v.skill.name) })); }
+function sparWin(v) { ensureSkill(v); addSkillXp(v, 15); saveState(); refreshPanel(); afterCraftChange(); toastr.success(t('train_story', { xp: 15, skill: escapeHtml(v.skill.name) })); }
 
 // ---- Trainer quest program (practice drills + field tasks graded from the story) ----
 function parseQuestReward(rw) {
@@ -1452,7 +1452,7 @@ function grantQuestReward(v, q, quality) {
         const it = buildTrainingItem(rw.item); inv.add(it); notes.push('🎁 ' + escapeHtml(it.name));
     }
     if (settings.autoChatNote) insertChatNote(t('cn_train_done', { user: getContext().name1 || 'I', vendor: v.name, skill: v.skill.name, title: q.title, desc: q.desc || '', reward: questRewardPlain(q) }));
-    saveState(); renderPanel();
+    saveState(); refreshPanel();
     toastr.success(t('q_reward_got', { list: notes.join(' · ') }));
     if (q.main) advanceTrainerLevel(v); // finishing both mains of the level opens the next
 }
@@ -1647,15 +1647,23 @@ function recipeIconKey(r) { const k = ingIconKey((r.name || '') + ' ' + (r.resul
 let benchSel = null, benchSlotsFor = null, benchSlots = [], benchCrafted = '', benchCraftedQ = '', benchBusy = false, sharpenTarget = '';
 let cbCook = null, cbKeyH = null, cbVendorId = null;
 function cbRenderAll(v) {
+    // The workbench has its own redraw and its own two scrolling lists — the recipe
+    // list and the ingredient grid. Crafting one thing rebuilt both and lost the
+    // place in each, exactly as buying did in the shop.
+    const keepScroll = grabScroll();
+    const root = document.getElementById('rpg-vnd-body');
+    if (root) root.classList.add('vnd-quiet');
     const safe = (fn, name, boxId) => { try { fn(); } catch (e) { console.error('[Vendors] ' + name + ' render failed:', e); const b = cbEl(boxId); if (b && !b.innerHTML) b.innerHTML = `<div class="cb-empty">${escapeHtml(t('craft_err'))}</div>`; } };
     safe(() => cbRenderRecipes(v), 'recipes', 'vc-rlist');
     safe(() => cbRenderBench(v), 'bench', 'vc-bench');
     safe(() => cbRenderInv(v), 'ingredients', 'vc-igrid');
+    restoreScroll(keepScroll);
+    if (root) requestAnimationFrame(() => requestAnimationFrame(() => root.classList.remove('vnd-quiet')));
 }
 function afterCraftChange() {
     const v = state.vendors.find(x => x.id === cbVendorId);
     if (v && document.getElementById('vc-bench')) cbRenderAll(v);
-    else renderPanel();
+    else refreshPanel();
 }
 
 function cbCurRecipe(v) { return benchSel === 'free' ? null : (v.recipes || []).find(r => r.id === benchSel && r.learned); }
@@ -1965,7 +1973,7 @@ function openVendorShop(vendorId) {
     if (!settings.enabled) return;
     currentVendorId = vendorId; setActive(vendorId);
     view = 'workshop'; tab = 'profile'; selSlot = ''; selItemId = '';
-    renderButton(); renderPanel();
+    renderButton(); refreshPanel();
     $('#rpg-vnd-modal').addClass('visible');
 }
 function addVendorButtons() {
@@ -2005,17 +2013,73 @@ function renderButton() {
     $('#rpg-vnd-btn').off('click').on('click', () => { view = 'list'; renderPanel(); $('#rpg-vnd-modal').toggleClass('visible'); });
 }
 
+/* offsetTop and offsetLeft were read on every mouse move, and each read makes the
+   browser recompute the layout of the whole page before it can answer — with a long
+   chat behind the panel that is most of a frame, hence the stutter. The position is
+   held in memory instead, written once per animation frame, and committed to top/left
+   only when the drag ends, so nothing downstream sees a different kind of value. */
+/* Names were run through escapeHtml before going into a notification, but toastr
+   shows them as text — so an apostrophe arrived as "&#39;" and stayed that way.
+   Escaping is still right for anything that lands in the panel's markup; this is for
+   the ones that land in a notification, where the browser never decodes them. */
+function unesc(v) {
+    return String(v ?? '')
+        .replace(/&#0?39;/g, "'").replace(/&apos;/g, "'")
+        .replace(/&quot;/g, '"')
+        .replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+        .replace(/&#x2F;/gi, '/')
+        .replace(/&amp;/g, '&');   // last, or the ampersands of the others come back
+}
+
+/* Wraps toastr so every message it shows is decoded once on the way out. The call
+   sites keep escaping — they feed the panel too — and nothing else has to change. */
+(function () {
+    if (!window.toastr || window.toastr.__vndUnesc) return;
+    ['success', 'info', 'warning', 'error'].forEach(k => {
+        const orig = toastr[k];
+        if (typeof orig !== 'function') return;
+        toastr[k] = function (msg, title, opts) {
+            return orig.call(toastr, unesc(msg), title === undefined ? title : unesc(title), opts);
+        };
+    });
+    window.toastr.__vndUnesc = true;
+})();
+
 function makeModalDraggable(elmnt, handle) {
-    let p1 = 0, p2 = 0, p3 = 0, p4 = 0;
     if (!handle) return;
     handle.onmousedown = (e) => {
         if (e.target.closest('.rpg-modal-close, .vnf-x, button, input, select, textarea, a')) return;
-        e.preventDefault(); p3 = e.clientX; p4 = e.clientY;
-        document.onmouseup = () => { document.onmouseup = null; document.onmousemove = null; };
-        document.onmousemove = (ev) => {
-            ev.preventDefault(); p1 = p3 - ev.clientX; p2 = p4 - ev.clientY; p3 = ev.clientX; p4 = ev.clientY;
-            elmnt.style.top = (elmnt.offsetTop - p2) + 'px'; elmnt.style.left = (elmnt.offsetLeft - p1) + 'px';
+        e.preventDefault();
+
+        const startX = e.clientX, startY = e.clientY;
+        const rect = elmnt.getBoundingClientRect();   // read once, not per move
+        const baseLeft = rect.left, baseTop = rect.top;
+        let dx = 0, dy = 0, queued = false;
+
+        const paint = () => {
+            queued = false;
+            elmnt.style.transform = `translate(${dx}px, ${dy}px)`;
         };
+
+        const onMove = (ev) => {
+            ev.preventDefault();
+            dx = ev.clientX - startX;
+            dy = ev.clientY - startY;
+            if (!queued) { queued = true; requestAnimationFrame(paint); }
+        };
+
+        const onUp = () => {
+            document.removeEventListener('mousemove', onMove);
+            document.removeEventListener('mouseup', onUp);
+            // Fold the offset back into top/left and drop the transform, so the element
+            // is positioned exactly the way it was before any of this.
+            elmnt.style.transform = '';
+            elmnt.style.left = (baseLeft + dx) + 'px';
+            elmnt.style.top = (baseTop + dy) + 'px';
+        };
+
+        document.addEventListener('mousemove', onMove, { passive: false });
+        document.addEventListener('mouseup', onUp);
     };
 }
 
@@ -2037,20 +2101,131 @@ function fitPanel() {
         fit.style.transform = 'none';
         fit.style.transformOrigin = 'top center';
         fit.style.height = 'auto';
+        fit.dataset.scale = '1';
         return;
     }
-    fit.style.transform = 'none';
-    fit.style.height = 'auto'; // let the panel take its natural content height before measuring
+    // This is the flash. Resetting the transform and the height forces the browser to
+    // lay the panel out unscaled, then offsetHeight is read from that state, then the
+    // scale goes back on — so between the two paints the panel really does jump to
+    // full size and back. Reading the height BEFORE anything is written keeps it to a
+    // single, invisible change.
     const design = 460;              // the panel's visual design width
     const cap = 472;
     const availW = Math.min(cap, window.innerWidth * 0.96) - 4;
     const s = Math.min(1, availW / design); // width-only: never resize by content height (no jumps)
+
+    // getBoundingClientRect reports the SCALED height, so the current scale is divided
+    // out to recover the natural one — no need to unscale the element to measure it.
+    const prev = fit.dataset.scale ? parseFloat(fit.dataset.scale) : 1;
+    const natural = panel.getBoundingClientRect().height / (prev || 1);
+
     fit.style.transformOrigin = 'top center';
     fit.style.transform = 'scale(' + s + ')';
-    fit.style.height = (panel.offsetHeight * s) + 'px';
+    fit.style.height = (natural * s) + 'px';
+    fit.dataset.scale = String(s);
 }
 
 // ============================ MAIN RENDER ============================
+/* Every action here — buying, taking a job, abandoning one, training — rebuilds the
+   whole panel, and the panel contains lists taller than the screen. Nothing ever
+   remembered where those lists were scrolled to, so buying the last potion in a long
+   shop threw you back to the top of it.
+
+   Rather than making thirty-three call sites careful, the position is taken before a
+   redraw and put back after. Areas are matched by class, so a list that is not on
+   screen any more is simply skipped. */
+const SCROLL_AREAS = ['.vnf-tabbody', '.vnf-matlist', '.vnf-panel', '.rlist', '.igrid', '.vc-forage-list'];
+
+/* Buying something redraws the whole stage, and every entrance animation in it plays
+   again — the card flips, the sheets slide in, the view fades. That replay is the
+   flash. It is right on a real transition (a different vendor, a different section)
+   and wrong when one line of a list changed underneath you.
+
+   So a redraw that stays where it is gets marked, the stylesheet switches the
+   animations off for that one frame, and the mark is removed straight after. The
+   animations themselves are untouched. */
+let quietRedraw = false;
+function withQuietRedraw(fn) {
+    const root = document.getElementById('rpg-vnd-body');
+    const was = quietRedraw;
+    quietRedraw = true;
+    if (root) root.classList.add('vnd-quiet');
+    try { fn(); }
+    finally {
+        quietRedraw = was;
+        // Two frames: one for the browser to paint the new markup, one to be sure the
+        // animations are not started retroactively when the class comes off.
+        if (root) requestAnimationFrame(() => requestAnimationFrame(() => {
+            if (!quietRedraw) root.classList.remove('vnd-quiet');
+        }));
+    }
+}
+
+// Redraws that follow an action rather than a navigation. Everything else keeps its
+// entrance the way it always looked.
+function refreshPanel() { withQuietRedraw(() => renderPanel()); }
+
+/* Buying and taking a job change what is inside the open tab and nothing else — the
+   header, the breadcrumbs, the tab strip and the card around them are all identical
+   afterwards. Rebuilding the whole stage for that is what the blink is: a large
+   subtree is thrown away and made again, and the browser paints the gap.
+
+   So when the workshop is open on a tab, only the tab's contents are replaced. Falls
+   back to the full redraw whenever the layout genuinely differs — a different view, a
+   vendor that has gone, or the container not being there. */
+function refreshTab() {
+    try {
+        if (view !== 'workshop') return refreshPanel();
+        const holder = document.getElementById('v-tb');
+        if (!holder) return refreshPanel();
+        const v = state.vendors.find(x => x.id === currentVendorId);
+        if (!v) return refreshPanel();
+
+        const keepScroll = grabScroll();
+        const inner = holder.querySelector('.vnf-tbin');
+        if (!inner) return refreshPanel();
+        inner.innerHTML = tabHtml(v);
+        // The whole dossier is re-wired: the handlers are delegated off the panel body,
+        // so this costs nothing extra and keeps every button working exactly as it did
+        // after a full redraw.
+        wireDossier($('#rpg-vnd-body'));
+        restoreScroll(keepScroll);
+        fitPanel();
+    } catch (e) {
+        console.error('[Vendors] tab refresh failed, falling back:', e);
+        refreshPanel();
+    }
+}
+
+function grabScroll() {
+    const out = [];
+    try {
+        const root = document.getElementById('rpg-vnd-body');
+        if (!root) return out;
+        SCROLL_AREAS.forEach(sel => {
+            root.querySelectorAll(sel).forEach((el, i) => {
+                if (el.scrollTop > 0) out.push({ sel, i, top: el.scrollTop, left: el.scrollLeft });
+            });
+        });
+    } catch (e) { /* never let this break a redraw */ }
+    return out;
+}
+
+function restoreScroll(saved) {
+    if (!saved || !saved.length) return;
+    try {
+        const root = document.getElementById('rpg-vnd-body');
+        if (!root) return;
+        saved.forEach(s => {
+            const el = root.querySelectorAll(s.sel)[s.i];
+            if (!el) return;
+            // A rebuilt list can be shorter than it was; the browser clamps for us.
+            el.scrollTop = s.top;
+            if (s.left) el.scrollLeft = s.left;
+        });
+    } catch (e) { /* same */ }
+}
+
 function renderPanel() {
     const body = $('#rpg-vnd-body');
     if (body.length === 0 || !state) return;
@@ -2078,6 +2253,8 @@ function renderStage() {
     const stageEl = body.find('.vnf-stage');
     if (stageEl.length === 0) return renderPanel();
 
+    const keepScroll = grabScroll();
+
     let stage;
     if (view === 'form') stage = formStage();
     else if (view === 'workshop') stage = dossierStage();
@@ -2089,6 +2266,9 @@ function renderStage() {
     else wireIndex(body);
 
     fitPanel();
+    // After fitPanel, because that is what settles the final heights — restoring
+    // before it would be clamped against a layout that is about to change.
+    restoreScroll(keepScroll);
 }
 
 // ---------------- INDEX (rolodex) ----------------
@@ -2487,7 +2667,7 @@ function setupUI() {
         $('.rpg-vnd-settings .inline-drawer-content').show();
         $('.rpg-vnd-settings .inline-drawer-icon').removeClass('down').addClass('up');
         $('#rpg-vnd-btn').attr('title', t('btn_title')); $('#rpg-vnd-title').text(t('panel_title'));
-        renderPanel(); buildInjection();
+        refreshPanel(); buildInjection();
     });
     $('#rpg-vnd-base').val(settings.baseUrl).on('change', function () { settings.baseUrl = $(this).val(); saveSettings(); });
     $('#rpg-vnd-key').val(settings.apiKey).on('change', function () { settings.apiKey = $(this).val(); saveSettings(); });
@@ -2497,7 +2677,7 @@ function setupUI() {
     $('#rpg-vnd-reqai').prop('checked', !!settings.requireAiCheck).on('change', function () { settings.requireAiCheck = this.checked; saveSettings(); });
     $('#rpg-vnd-cardinject').prop('checked', settings.cardInject !== false).on('change', function () { settings.cardInject = this.checked; saveSettings(); buildInjection(); buildCardInjection(); });
     $('#rpg-vnd-questglobal').prop('checked', settings.questGlobal !== false).on('change', function () { settings.questGlobal = this.checked; saveSettings(); buildInjection(); });
-    $('#rpg-vnd-needpresence').prop('checked', !!settings.questsNeedPresence).on('change', function () { settings.questsNeedPresence = this.checked; saveSettings(); renderPanel(); });
+    $('#rpg-vnd-needpresence').prop('checked', !!settings.questsNeedPresence).on('change', function () { settings.questsNeedPresence = this.checked; saveSettings(); refreshPanel(); });
 }
 
 async function maybeDropBrokenGear() {
@@ -2526,7 +2706,7 @@ async function maybeDropBrokenGear() {
             const v = vendors[Math.floor(Math.random() * vendors.length)];
             if (!Array.isArray(state.quests)) state.quests = [];
             state.quests.push({ id: genId(), vendorId: v.id, type: 'repair', title: t('brokendrop_qtitle', { name }), desc: t('brokendrop_qdesc', { name, vendor: v.name }), requirement: t('brokendrop_qreq', { name }), reward: { kind: 'repair', name, amount: 100 }, status: 'available' });
-            saveState(); renderPanel();
+            saveState(); refreshPanel();
             if (settings.autoChatNote) insertChatNote(t('brokendrop_note', { user: ctx.name1 || 'I', name, vendor: v.name, role: vendorRole(v).toLowerCase() }));
         } else {
             saveState();

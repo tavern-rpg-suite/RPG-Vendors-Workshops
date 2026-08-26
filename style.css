@@ -632,3 +632,13 @@
 .vc-forage-list::-webkit-scrollbar-track { background: rgba(120, 90, 50, .1); border-radius: 5px; }
 .vc-forage-list::-webkit-scrollbar-thumb { background: #c2b288; border-radius: 5px; }
 .vc-forage-list::-webkit-scrollbar-thumb:hover { background: #b3a075; }
+
+/* A redraw that follows an action, not a navigation: the entrance animations would
+   replay and read as a flash. Switched off for that one frame only — the animations
+   themselves are unchanged and still play when you actually move somewhere. */
+#rpg-vnd-body.vnd-quiet .vnf-card,
+#rpg-vnd-body.vnd-quiet .vnf-view,
+#rpg-vnd-body.vnd-quiet .vnf-tbin,
+#rpg-vnd-body.vnd-quiet .vnf-scard,
+#rpg-vnd-body.vnd-quiet .rpg-cb .col,
+#rpg-vnd-body.vnd-quiet .vnf-panel { animation: none !important; }
