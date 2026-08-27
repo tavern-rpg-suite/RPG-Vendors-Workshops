@@ -1974,6 +1974,7 @@ function openVendorShop(vendorId) {
     currentVendorId = vendorId; setActive(vendorId);
     view = 'workshop'; tab = 'profile'; selSlot = ''; selItemId = '';
     renderButton(); refreshPanel();
+    (() => { const m = document.getElementById('rpg-vnd-modal'); if (m && !m.classList.contains('visible')) m.style.animation = ''; })();
     $('#rpg-vnd-modal').addClass('visible');
 }
 function addVendorButtons() {
@@ -2010,7 +2011,12 @@ function renderButton() {
     }
     if (!settings.enabled) { $('#rpg-vnd-btn').hide(); return; }
     $('#rpg-vnd-btn').show();
-    $('#rpg-vnd-btn').off('click').on('click', () => { view = 'list'; renderPanel(); $('#rpg-vnd-modal').toggleClass('visible'); });
+    $('#rpg-vnd-btn').off('click').on('click', () => {
+        view = 'list'; renderPanel();
+        const m = document.getElementById('rpg-vnd-modal');
+        if (m && !m.classList.contains('visible')) m.style.animation = '';
+        $('#rpg-vnd-modal').toggleClass('visible');
+    });
 }
 
 /* offsetTop and offsetLeft were read on every mouse move, and each read makes the
@@ -2051,31 +2057,39 @@ function makeModalDraggable(elmnt, handle) {
         if (e.target.closest('.rpg-modal-close, .vnf-x, button, input, select, textarea, a')) return;
         e.preventDefault();
 
-        const startX = e.clientX, startY = e.clientY;
-        const rect = elmnt.getBoundingClientRect();   // read once, not per move
-        const baseLeft = rect.left, baseTop = rect.top;
-        let dx = 0, dy = 0, queued = false;
+        /* The canonical approach: remember how far the pointer is from the window's
+           corner and keep that distance for the whole drag. Nothing is written to
+           transform, which is what the opening animation and any scaling use — those
+           overwrote each other and the window drifted the wrong way.
+
+           Layout is measured once here and never during the drag; the writes are
+           batched into a single animation frame. */
+        const rect = elmnt.getBoundingClientRect();
+        const shiftX = e.clientX - rect.left;
+        const shiftY = e.clientY - rect.top;
+
+        let x = rect.left, y = rect.top, queued = false;
 
         const paint = () => {
             queued = false;
-            elmnt.style.transform = `translate(${dx}px, ${dy}px)`;
+            elmnt.style.left = x + 'px';
+            elmnt.style.top = y + 'px';
         };
+
+        elmnt.style.left = rect.left + 'px';
+        elmnt.style.top = rect.top + 'px';
 
         const onMove = (ev) => {
             ev.preventDefault();
-            dx = ev.clientX - startX;
-            dy = ev.clientY - startY;
+            x = ev.clientX - shiftX;
+            y = ev.clientY - shiftY;
             if (!queued) { queued = true; requestAnimationFrame(paint); }
         };
 
         const onUp = () => {
             document.removeEventListener('mousemove', onMove);
             document.removeEventListener('mouseup', onUp);
-            // Fold the offset back into top/left and drop the transform, so the element
-            // is positioned exactly the way it was before any of this.
-            elmnt.style.transform = '';
-            elmnt.style.left = (baseLeft + dx) + 'px';
-            elmnt.style.top = (baseTop + dy) + 'px';
+            paint();
         };
 
         document.addEventListener('mousemove', onMove, { passive: false });
