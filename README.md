@@ -9,6 +9,9 @@ A SillyTavern extension that fills your world with **vendors, crafters and train
 ---
 
 ## ✨ What a vendor can do
+<p>
+<img width="1774" height="887" alt="c94ee6d6-8ae8-488b-8054-e6d1759f8bda" src="https://github.com/user-attachments/assets/09e55f87-e10e-46d6-8fd4-77b80ea309f3" />
+</p>
 
 Each vendor is a character card with a **type** (cook, apothecary, tailor, blacksmith, jeweller, merchant, **trainer**, or custom) and tabs:
 
