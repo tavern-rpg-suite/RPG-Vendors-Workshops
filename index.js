@@ -220,18 +220,50 @@ function loadSettings() {
     // heal NaN/garbage that an empty number input could have saved
     if (!Number.isFinite(settings.injectDepth)) settings.injectDepth = defaultSettings.injectDepth;
 }
-function saveSettings(immediate = true) {
-    extension_settings[MODULE_NAME] = settings;
-    // Discrete changes (buying, selling, taking loot, crafting…) flush to disk right away, so a quick
-    // page reload can't lose coins or items (the debounced save can be ~1s late and get dropped on
-    // refresh). High-frequency per-message writes pass immediate=false to stay debounced. Same pattern
-    // as RPG-Equipment-Durability.
-    if (immediate && typeof stSaveSettings === 'function') {
+/* THE BLINK.
+
+   Every discrete change — buying, switching a recipe, dropping an ingredient onto the
+   bench, finishing a craft — called SillyTavern's immediate save, which serialises the
+   entire settings file and posts it. With a suite this size that object is large, and
+   the work happens on the main thread: the page stops for a moment and then repaints
+   all at once. It reads as a flash and cannot be caught on video, because nothing is
+   actually being redrawn — the browser is simply busy.
+
+   The intent behind the immediate save was not to lose coins to a quick refresh, and
+   that is kept: the write still happens, it is merely coalesced. Several actions in
+   quick succession now cost one write instead of one each, and anything still pending
+   is flushed when the page is closed or the chat is left. */
+let cpTimer = 0;
+let saveTimer = 0;
+let savePending = false;
+
+function flushSettings() {
+    if (saveTimer) { clearTimeout(saveTimer); saveTimer = 0; }
+    if (!savePending) return;
+    savePending = false;
+    if (typeof stSaveSettings === 'function') {
         try { const p = stSaveSettings(); if (p && typeof p.catch === 'function') p.catch(() => { }); return; }
-        catch (e) { /* fall back to debounced below */ }
+        catch (e) { /* fall through */ }
     }
     if (typeof saveSettingsDebounced === 'function') saveSettingsDebounced();
 }
+
+function saveSettings(immediate = true) {
+    extension_settings[MODULE_NAME] = settings;
+    if (immediate) {
+        savePending = true;
+        if (saveTimer) clearTimeout(saveTimer);
+        // Long enough that a burst of clicks costs one write, short enough that the
+        // data is on disk before anyone can reach for the refresh key.
+        saveTimer = setTimeout(flushSettings, 400);
+        return;
+    }
+    if (typeof saveSettingsDebounced === 'function') saveSettingsDebounced();
+}
+
+// Nothing pending may be lost: both of these happen before anything can go away.
+window.addEventListener('beforeunload', flushSettings);
+try { eventSource.on(event_types.CHAT_CHANGED, flushSettings); } catch (e) { }
 
 // Per-chat vendor states used to live in settings forever, bloating settings.json.
 // States untouched for STATE_TTL days are dropped; they remain recoverable from the
@@ -315,8 +347,20 @@ function saveState(immediate = true) {
         if (chat && chat.length > 0 && Array.isArray(state.vendors) && state.vendors.length) {
             const lastMsg = chat[chat.length - 1];
             if (!lastMsg.extra) lastMsg.extra = {};
-            lastMsg.extra.rpg_vendors_checkpoint = cloneState(state);
-            saveChatDebounced();
+            // cloneState walks the whole vendor tree, and this ran on every click too.
+            // Deferred with the settings write, for the same reason.
+            if (cpTimer) clearTimeout(cpTimer);
+            cpTimer = setTimeout(() => {
+                cpTimer = 0;
+                try {
+                    const c = getContext().chat;
+                    if (!c || !c.length) return;
+                    const m = c[c.length - 1];
+                    if (!m.extra) m.extra = {};
+                    m.extra.rpg_vendors_checkpoint = cloneState(state);
+                    saveChatDebounced();
+                } catch (e) { console.error('[Vendors] checkpoint save failed:', e); }
+            }, 500);
         }
     } catch (e) { console.error('[Vendors] checkpoint save failed:', e); }
 }
@@ -618,6 +662,9 @@ Output strictly JSON: {"type":"blacksmith","name":"","desc":""}`;
         const v = { id: genId(), type: type, name: String(res.name || 'Vendor'), desc: String(res.desc || ''), charName: '' };
         state.vendors.push(v); saveState();
         toastr.success(t('toast_gen_done'));
+        // Not reset here on purpose: the window is already open, so this is a change
+        // of view inside it, not an opening. Letting the entrance replay was one more
+        // place the panel flashed.
         view = 'list'; renderPanel();
     } catch (e) { toastr.error(t('toast_gen_err')); }
 }
@@ -1646,19 +1693,24 @@ function recipeIconKey(r) { const k = ingIconKey((r.name || '') + ' ' + (r.resul
 
 let benchSel = null, benchSlotsFor = null, benchSlots = [], benchCrafted = '', benchCraftedQ = '', benchBusy = false, sharpenTarget = '';
 let cbCook = null, cbKeyH = null, cbVendorId = null;
+/* cbRenderBench and cbRenderInv are called on their own from several places —
+   placing an ingredient, taking one back — and those calls went round the quiet
+   flag, so the chips popped in again every time. Wrapped once here rather than at
+   each call site. */
+// Kept as a name so the call sites do not change; the flag is permanent now, so
+// there is nothing to add or take away around a redraw.
+function cbQuiet(fn) { fn(); }
+
 function cbRenderAll(v) {
     // The workbench has its own redraw and its own two scrolling lists — the recipe
     // list and the ingredient grid. Crafting one thing rebuilt both and lost the
     // place in each, exactly as buying did in the shop.
     const keepScroll = grabScroll();
-    const root = document.getElementById('rpg-vnd-body');
-    if (root) root.classList.add('vnd-quiet');
     const safe = (fn, name, boxId) => { try { fn(); } catch (e) { console.error('[Vendors] ' + name + ' render failed:', e); const b = cbEl(boxId); if (b && !b.innerHTML) b.innerHTML = `<div class="cb-empty">${escapeHtml(t('craft_err'))}</div>`; } };
     safe(() => cbRenderRecipes(v), 'recipes', 'vc-rlist');
     safe(() => cbRenderBench(v), 'bench', 'vc-bench');
     safe(() => cbRenderInv(v), 'ingredients', 'vc-igrid');
     restoreScroll(keepScroll);
-    if (root) requestAnimationFrame(() => requestAnimationFrame(() => root.classList.remove('vnd-quiet')));
 }
 function afterCraftChange() {
     const v = state.vendors.find(x => x.id === cbVendorId);
@@ -1690,7 +1742,9 @@ function cbEl(id) { return document.getElementById(id); }
 
 function cbRenderRecipes(v) {
     const box = cbEl('vc-rlist'); if (!box) return;
-    const hh = cbEl('vc-rech'); if (hh) hh.innerHTML = cbIcon('book') + escapeHtml(t('recipes_side'));
+    // Rewritten on every click even though it never changes — patchHtml sees that and
+    // does nothing, instead of destroying the icon and building it again.
+    const hh = cbEl('vc-rech'); if (hh) patchHtml(hh, cbIcon('book') + escapeHtml(t('recipes_side')));
     const recs = v.recipes || [];
     // how many of each material the player is carrying — so recipe ingredients show green (have) / red (missing)
     const inv = invApi(); const bagCount = {};
@@ -1714,7 +1768,7 @@ function cbRenderRecipes(v) {
         }
     });
     if (!recs.length) html += `<div class="cb-empty">${escapeHtml(t('craft_none_known'))}</div>`;
-    box.innerHTML = html;
+    patchHtml(box, html);
     box.querySelectorAll('.recipe[data-r]').forEach(b => b.onclick = () => craftSelect(v, b.dataset.r));
     box.querySelectorAll('.rhunt').forEach(el => el.onclick = (e) => {
         e.stopPropagation();   // don't also select the recipe
@@ -1766,7 +1820,7 @@ function cbRenderBench(v) {
             + (isSharp && r.targetGrade === 4 ? `<div class="cb-sharp-warn">${escapeHtml(t('sharpen_risky'))}</div>` : '') + `</div>`;
     }
     const actKey = isSharp ? 'sharpen_btn' : (isRepair ? 'repair_btn' : (benchSel === 'free' ? 'free_btn' : 'craft_btn'));
-    box.innerHTML = `<div class="col-h">${cbIcon('spark')}${escapeHtml(t('craft_section'))}</div>
+    patchHtml(box, `<div class="col-h">${cbIcon('spark')}${escapeHtml(t('craft_section'))}</div>
         <div class="circle" id="cb-circle">
             <svg class="ring-svg" viewBox="0 0 100 100"><g class="ring"><circle class="ring-o" cx="50" cy="50" r="46.5"/><circle class="ring-i" cx="50" cy="50" r="43"/>${ticks}${glyphs}</g></svg>
             <svg class="line-svg" viewBox="0 0 100 100">${lines}</svg>
@@ -1775,7 +1829,7 @@ function cbRenderBench(v) {
         </div>
         <div class="rlabel">${label}</div>
         ${sharpPicker}
-        <button class="craft-btn ${ready ? 'ready' : ''}" id="cb-do">${cbIcon('spark')}${escapeHtml(t(actKey))}</button>`;
+        <button class="craft-btn ${ready ? 'ready' : ''}" id="cb-do">${cbIcon('spark')}${escapeHtml(t(actKey))}</button>`);
     const stg = cbEl('cb-sharptgt'); if (stg) stg.onchange = () => { sharpenTarget = stg.value; };
     box.querySelectorAll('.slot.filled').forEach(el => el.onclick = () => craftUnslot(v, +el.dataset.i));
     box.querySelectorAll('.slot.want').forEach(el => {
@@ -1788,7 +1842,7 @@ function cbRenderBench(v) {
 
 function cbRenderInv(v) {
     const box = cbEl('vc-igrid'); if (!box) return;
-    const hh = cbEl('vc-ingh'); if (hh) hh.innerHTML = cbIcon('box') + escapeHtml(t('ingredients_side'));
+    const hh = cbEl('vc-ingh'); if (hh) patchHtml(hh, cbIcon('box') + escapeHtml(t('ingredients_side')));
     const inv = invApi(); const bag = inv ? inv.list() : [];
     const placed = new Set(benchSlots.map(s => s.itemId).filter(Boolean));
     const r = cbCurRecipe(v);
@@ -1796,12 +1850,12 @@ function cbRenderInv(v) {
     const agg = {};
     bag.forEach(m => { const k = m.name; if (!agg[k]) agg[k] = { name: m.name, desc: m.desc || '', ids: [], free: [] }; agg[k].ids.push(m.id); if (!placed.has(m.id)) agg[k].free.push(m.id); });
     const rows = Object.values(agg);
-    if (!inv) box.innerHTML = `<div class="cb-empty">${escapeHtml(t('no_inv_shop'))}</div>`;
-    else if (!rows.length) box.innerHTML = `<div class="cb-empty">${escapeHtml(t('no_materials'))}</div>`;
-    else box.innerHTML = rows.map(a => {
+    if (!inv) patchHtml(box, `<div class="cb-empty">${escapeHtml(t('no_inv_shop'))}</div>`);
+    else if (!rows.length) patchHtml(box, `<div class="cb-empty">${escapeHtml(t('no_materials'))}</div>`);
+    else patchHtml(box, rows.map(a => {
         const c = a.free.length; const isNeed = needSet.has(ingKey(a.name)) && benchSlots.some(s => !s.itemId && s.need && sameIng(s.need, a.name));
         return `<div class="ing ${c <= 0 ? 'empty' : ''} ${isNeed && c > 0 ? 'match' : ''}" draggable="${c > 0 ? 'true' : 'false'}" data-id="${a.free[0] || a.ids[0]}"><div class="vial">${cbIcon(ingIconKey(a.name))}</div><div class="info"><div class="in">${escapeHtml(a.name)}</div><div class="ic">${escapeHtml(isNeed ? t('cb_needed') : (a.desc || t('cb_ingredient')))}</div></div><span class="cnt">×${c}</span></div>`;
-    }).join('');
+    }).join(''));
     // active foraging hunt — what to look for and where; the loupe turns these up while you search
     const fl = cbEl('vc-forage-list');
     if (fl) {
@@ -1814,17 +1868,17 @@ function cbRenderInv(v) {
             if (pend.length) rows.push({ id: x.id, pend });
         });
         if (rows.length) {
-            fl.innerHTML = `<div class="fq-h">${escapeHtml(t('forage_active'))}</div>` + rows.map(r =>
+            patchHtml(fl, `<div class="fq-h">${escapeHtml(t('forage_active'))}</div>` + rows.map(r =>
                 `<div class="fq-quest"><span class="fq-x" data-fq="${r.id}" title="${escapeHtml(t('forage_cancel'))}">✕</span>` +
                 r.pend.slice(0, 12).map(i => `<div class="fq-row"><b>${escapeHtml(i.name)}</b>${i.where ? `<span>${escapeHtml(i.where)}</span>` : ''}</div>`).join('') +
-                `</div>`).join('') + `<div class="fq-note">${escapeHtml(t('forage_hint'))}</div>`;
+                `</div>`).join('') + `<div class="fq-note">${escapeHtml(t('forage_hint'))}</div>`);
             fl.style.display = '';
             fl.querySelectorAll('.fq-x').forEach(el => el.onclick = () => {
                 const qq = questApi();
                 if (qq && qq.removeForage) qq.removeForage(el.dataset.fq);
                 afterCraftChange();
             });
-        } else { fl.innerHTML = ''; fl.style.display = 'none'; }
+        } else { patchHtml(fl, ''); fl.style.display = 'none'; }
     }
     box.querySelectorAll('.ing:not(.empty)').forEach(el => {
         el.onclick = () => craftPlace(v, el.dataset.id);
@@ -1842,16 +1896,16 @@ function craftPlace(v, itemId) {
     if (benchSel === 'free') slot = benchSlots.find(s => !s.itemId);
     else slot = benchSlots.find(s => !s.itemId && s.need && sameIng(s.need, item.name));
     if (!slot) return;
-    slot.itemId = itemId; benchCrafted = ''; cbRenderBench(v); cbRenderInv(v);
+    slot.itemId = itemId; benchCrafted = ''; cbQuiet(() => { cbRenderBench(v); cbRenderInv(v); });
 }
-function craftUnslot(v, i) { if (benchBusy) return; const s = benchSlots[i]; if (s && s.itemId) { s.itemId = null; benchCrafted = ''; cbRenderBench(v); cbRenderInv(v); } }
+function craftUnslot(v, i) { if (benchBusy) return; const s = benchSlots[i]; if (s && s.itemId) { s.itemId = null; benchCrafted = ''; cbQuiet(() => { cbRenderBench(v); cbRenderInv(v); }); } }
 function craftGo(v) {
     if (benchBusy) return;
     // re-validate right before firing: a slotted item may have been sold/eaten since placement
     const bag = cbBag(v);
     let stale = false;
     benchSlots.forEach(s => { if (s.itemId && !bag.some(b => b.id === s.itemId)) { s.itemId = null; stale = true; } });
-    if (stale) { cbRenderBench(v); cbRenderInv(v); return; }
+    if (stale) { cbQuiet(() => { cbRenderBench(v); cbRenderInv(v); }); return; }
     if (!cbReady()) return;
     const r = cbCurRecipe(v);
     if (r && (r.kind === 'sharpen' || r.kind === 'repair') && !sharpenTarget) { toastr.warning(t('sharpen_need_target')); return; }
@@ -1930,7 +1984,7 @@ async function finishCraft(v, q) {
         benchSlots.forEach(s => s.itemId = null);
         benchCrafted = producedName; if (benchSel !== 'free' && !(r && (r.kind === 'sharpen' || r.kind === 'repair'))) benchCraftedQ = q;
         benchBusy = false;
-        cbRenderBench(v); cbRenderInv(v); cbRenderRecipes(v);
+        cbQuiet(() => { cbRenderBench(v); cbRenderInv(v); cbRenderRecipes(v); });
         const node = document.querySelector('#vc-bench .cnode');
         if (node) {
             const col = benchCraftedQ === 'perfect' ? 'rgba(90,150,60,.4)' : benchCraftedQ === 'bad' ? 'rgba(138,44,35,.4)' : 'rgba(200,161,47,.32)';
@@ -1975,6 +2029,7 @@ function openVendorShop(vendorId) {
     view = 'workshop'; tab = 'profile'; selSlot = ''; selItemId = '';
     renderButton(); refreshPanel();
     (() => { const m = document.getElementById('rpg-vnd-modal'); if (m && !m.classList.contains('visible')) m.style.animation = ''; })();
+    vndOpened = false;   // a real opening: let it animate in once
     $('#rpg-vnd-modal').addClass('visible');
 }
 function addVendorButtons() {
@@ -2101,6 +2156,7 @@ function typeOptions(sel) {
     return VENDOR_TYPES.map(ty => `<option value="${ty}" ${sel === ty ? 'selected' : ''}>${escapeHtml(typeLabel(ty))}</option>`).join('');
 }
 
+let fitPending = 0;
 function fitPanel() {
     const fit = document.querySelector('#rpg-vnd-body .vnf-fit');
     const panel = document.querySelector('#rpg-vnd-body .vnf-panel');
@@ -2128,15 +2184,34 @@ function fitPanel() {
     const availW = Math.min(cap, window.innerWidth * 0.96) - 4;
     const s = Math.min(1, availW / design); // width-only: never resize by content height (no jumps)
 
-    // getBoundingClientRect reports the SCALED height, so the current scale is divided
-    // out to recover the natural one — no need to unscale the element to measure it.
-    const prev = fit.dataset.scale ? parseFloat(fit.dataset.scale) : 1;
-    const natural = panel.getBoundingClientRect().height / (prev || 1);
-
     fit.style.transformOrigin = 'top center';
     fit.style.transform = 'scale(' + s + ')';
-    fit.style.height = (natural * s) + 'px';
     fit.dataset.scale = String(s);
+
+    /* THE BLINK.
+
+       fitPanel is called immediately after the contents change, and it measures the
+       panel to write an explicit height onto the wrapper. At that moment the browser
+       has not laid the new contents out yet, so the number it gets belongs to the
+       state that is on its way out — usually a smaller one.
+
+       The wrapper has `transition: height .2s`, so that wrong number is not merely
+       written, it is animated to. For a fifth of a second the wrapper is too short and
+       the bottom of the panel is cut off. That is the disappearing lower half, and it
+       happens on every path that changes anything: clicking a tab, buying, dragging an
+       ingredient onto the bench, finishing a craft.
+
+       Measured on the next frame instead, once the layout has settled. */
+    if (fitPending) cancelAnimationFrame(fitPending);
+    fitPending = requestAnimationFrame(() => {
+        fitPending = 0;
+        const f = document.querySelector('#rpg-vnd-body .vnf-fit');
+        const p = document.querySelector('#rpg-vnd-body .vnf-panel');
+        if (!f || !p) return;
+        const sc = parseFloat(f.dataset.scale) || 1;
+        const natural = p.getBoundingClientRect().height / sc;
+        if (natural > 0) f.style.height = (natural * sc) + 'px';
+    });
 }
 
 // ============================ MAIN RENDER ============================
@@ -2148,6 +2223,72 @@ function fitPanel() {
    Rather than making thirty-three call sites careful, the position is taken before a
    redraw and put back after. Areas are matched by class, so a list that is not on
    screen any more is simply skipped. */
+/* ============================================================
+   PATCHING INSTEAD OF REPLACING
+   ------------------------------------------------------------
+   Setting innerHTML throws the whole subtree away and builds a new one. Everything
+   the old nodes carried goes with them: running animations restart from zero, images
+   are re-decoded, scroll positions and transition states are lost. That is the blink
+   — not the animations themselves, which is why silencing them only helped a little.
+
+   This walks the new markup against the existing nodes and changes only what
+   actually differs. Nodes that are unchanged are never touched, so there is nothing
+   to re-animate and nothing to repaint.
+   ============================================================ */
+function patchNode(oldEl, newEl) {
+    // Different kind of thing entirely: no sense patching, swap it.
+    if (oldEl.nodeType !== newEl.nodeType || oldEl.nodeName !== newEl.nodeName) {
+        oldEl.replaceWith(newEl);
+        return;
+    }
+    if (oldEl.nodeType === Node.TEXT_NODE) {
+        if (oldEl.nodeValue !== newEl.nodeValue) oldEl.nodeValue = newEl.nodeValue;
+        return;
+    }
+    if (oldEl.nodeType !== Node.ELEMENT_NODE) return;
+
+    // attributes: add and update the new ones, drop the ones that went away
+    const seen = new Set();
+    for (const a of Array.from(newEl.attributes)) {
+        seen.add(a.name);
+        if (oldEl.getAttribute(a.name) !== a.value) oldEl.setAttribute(a.name, a.value);
+    }
+    for (const a of Array.from(oldEl.attributes)) {
+        if (!seen.has(a.name)) oldEl.removeAttribute(a.name);
+    }
+
+    // A field being edited must not be rewritten under the person's hands.
+    if (oldEl === document.activeElement && /^(INPUT|TEXTAREA|SELECT)$/.test(oldEl.nodeName)) return;
+
+    const oldKids = Array.from(oldEl.childNodes);
+    const newKids = Array.from(newEl.childNodes);
+    const n = Math.min(oldKids.length, newKids.length);
+    for (let i = 0; i < n; i++) patchNode(oldKids[i], newKids[i]);
+    for (let i = n; i < newKids.length; i++) oldEl.appendChild(newKids[i]);
+    for (let i = oldKids.length - 1; i >= n; i--) oldKids[i].remove();
+}
+
+function patchHtml(box, html) {
+    if (!box) return;
+    // Nothing changed at all: the commonest case, and the cheapest possible answer.
+    if (box.innerHTML === html) return;
+    try {
+        // A stand-in of the same kind, so children line up one to one with the box's.
+        const shadow = document.createElement(box.nodeName);
+        shadow.innerHTML = html;
+        const oldKids = Array.from(box.childNodes);
+        const newKids = Array.from(shadow.childNodes);
+        const n = Math.min(oldKids.length, newKids.length);
+        for (let i = 0; i < n; i++) patchNode(oldKids[i], newKids[i]);
+        for (let i = n; i < newKids.length; i++) box.appendChild(newKids[i]);
+        for (let i = oldKids.length - 1; i >= n; i--) oldKids[i].remove();
+    } catch (e) {
+        // Falling back rather than leaving the panel half-updated.
+        console.warn('[Vendors] patch failed, replacing:', e);
+        box.innerHTML = html;
+    }
+}
+
 const SCROLL_AREAS = ['.vnf-tabbody', '.vnf-matlist', '.vnf-panel', '.rlist', '.igrid', '.vc-forage-list'];
 
 /* Buying something redraws the whole stage, and every entrance animation in it plays
@@ -2158,35 +2299,25 @@ const SCROLL_AREAS = ['.vnf-tabbody', '.vnf-matlist', '.vnf-panel', '.rlist', '.
    So a redraw that stays where it is gets marked, the stylesheet switches the
    animations off for that one frame, and the mark is removed straight after. The
    animations themselves are untouched. */
-let quietRedraw = false;
-function withQuietRedraw(fn) {
+/* Setting `animation: none` does not cancel an animation — it prevents it. Take the
+   rule away again and the animation starts, right then, from the beginning. So the
+   old approach here, which added the class and removed it two frames later, did not
+   silence anything: it delayed every entrance by two frames and then played it. That
+   is the blink, and it is why it survived every other fix.
+
+   RPG-Equipment-Durability does the same job correctly and has been quiet ever since:
+   the flag is put on the freshly built markup and simply left there. It is cleared
+   only when the window is opened anew, which is the one time an entrance is wanted. */
+let vndOpened = false;
+
+function markQuiet() {
     const root = document.getElementById('rpg-vnd-body');
-    const was = quietRedraw;
-    quietRedraw = true;
-    if (root) root.classList.add('vnd-quiet');
-    try { fn(); }
-    finally {
-        quietRedraw = was;
-        // Two frames: one for the browser to paint the new markup, one to be sure the
-        // animations are not started retroactively when the class comes off.
-        if (root) requestAnimationFrame(() => requestAnimationFrame(() => {
-            if (!quietRedraw) root.classList.remove('vnd-quiet');
-        }));
-    }
+    if (root) root.classList.toggle('vnd-quiet', vndOpened);
+    vndOpened = true;
 }
 
-// Redraws that follow an action rather than a navigation. Everything else keeps its
-// entrance the way it always looked.
-function refreshPanel() { withQuietRedraw(() => renderPanel()); }
+function refreshPanel() { renderPanel(); }
 
-/* Buying and taking a job change what is inside the open tab and nothing else — the
-   header, the breadcrumbs, the tab strip and the card around them are all identical
-   afterwards. Rebuilding the whole stage for that is what the blink is: a large
-   subtree is thrown away and made again, and the browser paints the gap.
-
-   So when the workshop is open on a tab, only the tab's contents are replaced. Falls
-   back to the full redraw whenever the layout genuinely differs — a different view, a
-   vendor that has gone, or the container not being there. */
 function refreshTab() {
     try {
         if (view !== 'workshop') return refreshPanel();
@@ -2198,7 +2329,7 @@ function refreshTab() {
         const keepScroll = grabScroll();
         const inner = holder.querySelector('.vnf-tbin');
         if (!inner) return refreshPanel();
-        inner.innerHTML = tabHtml(v);
+        patchHtml(inner, tabHtml(v));
         // The whole dossier is re-wired: the handlers are delegated off the panel body,
         // so this costs nothing extra and keeps every button working exactly as it did
         // after a full redraw.
@@ -2279,6 +2410,7 @@ function renderStage() {
     else if (view === 'workshop') wireDossier(body);
     else wireIndex(body);
 
+    markQuiet();
     fitPanel();
     // After fitPanel, because that is what settles the final heights — restoring
     // before it would be clamped against a layout that is about to change.

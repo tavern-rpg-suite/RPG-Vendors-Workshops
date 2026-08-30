@@ -141,7 +141,16 @@
     box-shadow:0 26px 50px -18px rgba(0,0,0,.6),0 6px 14px rgba(0,0,0,.32),0 1px 0 rgba(255,255,255,.4) inset; animation:vnf-drop .5s cubic-bezier(.2,1,.3,1) both;
 }
 @keyframes vnf-drop { from{opacity:0;transform:translateY(-22px);} to{opacity:1;transform:translateY(0);} }
-#rpg-vnd-body .vnf-panel::before { content:""; position:absolute; inset:0; pointer-events:none; border-radius:inherit; mix-blend-mode:multiply; background:repeating-linear-gradient(91deg,rgba(122,92,48,.035) 0 1px,transparent 1px 5px); }
+/* mix-blend-mode was removed here and in three other places. Blending forces the
+   browser to recompose the whole region against whatever is behind it, and it has to
+   do that again on any change inside — which is a full repaint of the panel on every
+   click, drag and craft. That is the blink: not the contents being rebuilt, but the
+   blended layer being composited again.
+
+   The texture is a 3.5%-opacity stripe pattern, so multiplying it over paper and
+   simply drawing it over paper are visually the same thing. The colour is darkened a
+   touch to match what multiply produced. */
+#rpg-vnd-body .vnf-panel::before { content:""; position:absolute; inset:0; pointer-events:none; border-radius:inherit; background:repeating-linear-gradient(91deg,rgba(104,78,40,.045) 0 1px,transparent 1px 5px); }
 #rpg-vnd-body .vnf-tabcorner { position:absolute; top:-23px; left:24px; background:var(--paper-3); border:1px solid var(--edge); border-bottom:none;
     border-radius:9px 14px 0 0; padding:6px 16px 11px; font-family:"PT Mono",monospace; font-size:10px; letter-spacing:1.5px; color:var(--sepia); transform:rotate(-.5deg); cursor:grab; }
 #rpg-vnd-body .vnf-tabcorner b { color:var(--oxblood); font-weight:400; }
@@ -240,7 +249,7 @@
 #rpg-vnd-body .vnf-scard { position:relative; display:flex; flex-direction:column; background:linear-gradient(180deg,rgba(255,255,255,.35),transparent 14%),#fbf6e8; border:1px solid var(--edge); border-radius:7px 4px 7px 7px; padding:11px 11px 12px; box-shadow:0 4px 10px -4px rgba(43,32,20,.32),0 1px 0 rgba(255,255,255,.6) inset; animation:vnf-sheetin .3s ease-out both; }
 @keyframes vnf-sheetin { from{opacity:0;transform:translateY(8px) rotate(-.6deg);} to{opacity:1;transform:none;} }
 #rpg-vnd-body .vnf-scard::after { content:""; position:absolute; top:-1px; right:-1px; border-top:16px solid #d9c8a0; border-left:16px solid transparent; border-radius:0 4px 0 0; filter:drop-shadow(-1px 1px 1px rgba(0,0,0,.15)); }
-#rpg-vnd-body .vnf-scard::before { content:""; position:absolute; inset:0; border-radius:inherit; pointer-events:none; mix-blend-mode:multiply; background:repeating-linear-gradient(0deg,transparent 0 17px,rgba(120,150,190,.10) 17px 18px); }
+#rpg-vnd-body .vnf-scard::before { content:""; position:absolute; inset:0; border-radius:inherit; pointer-events:none; background:repeating-linear-gradient(0deg,transparent 0 17px,rgba(104,132,170,.13) 17px 18px); }
 #rpg-vnd-body .vnf-scard .tagline { margin-bottom:5px; }
 #rpg-vnd-body .vnf-scard .nm { font-weight:800; font-size:13.5px; line-height:1.5; color:var(--ink); margin-bottom:6px; }
 #rpg-vnd-body .vnf-scard .nm .mark { background:linear-gradient(transparent 14%,rgba(216,183,40,.55) 14% 86%,transparent 86%); box-decoration-break:clone; -webkit-box-decoration-break:clone; padding:0 3px; border-radius:1px; }
@@ -397,8 +406,8 @@
 .rpg-vnd-modal.vnd-wide #rpg-vnd-body .vnf-chrome::before,
 .rpg-vnd-modal.vnd-wide #rpg-vnd-body .vb-chead::before {
     content:""; position:absolute; inset:0; pointer-events:none; z-index:0;
-    border-radius:inherit; mix-blend-mode:multiply;
-    background:repeating-linear-gradient(91deg,rgba(122,92,48,.05) 0 1px,transparent 1px 5px);
+    border-radius:inherit;
+    background:repeating-linear-gradient(91deg,rgba(104,78,40,.062) 0 1px,transparent 1px 5px);
 }
 .rpg-vnd-modal.vnd-wide #rpg-vnd-body .vnf-top > *,
 .rpg-vnd-modal.vnd-wide #rpg-vnd-body .vnf-chrome > *,
@@ -436,7 +445,7 @@
 .rpg-cb { --paper:#f4ecd6;--paper-2:#ece0c0;--edge:#cdbb8e;--manila-edge:#b39e6e;--ink:#2b2014;--ink-soft:#574325;--sepia:#7a5c30;--gold:#c8a12f;--gold-soft:#e6cf86;--brass:#b89233;--oxblood:#8a2c23;--oxblood-deep:#591a15;--navy:#27425b;--violet:#5e3a96;--green:#4f7d3a;--green-deep:#39592a; font-family:"Alegreya",Georgia,serif; color:var(--ink); width:100%; }
 .rpg-cb .tri { display:flex; gap:12px; align-items:stretch; justify-content:center; width:100%; max-width:706px; margin:6px auto 0; flex-wrap:wrap; }
 .rpg-cb .col { position:relative; background:linear-gradient(180deg,rgba(255,255,255,.16),rgba(0,0,0,0) 14%),radial-gradient(140% 120% at 80% -10%,#f8f0da 0%,var(--paper) 48%,var(--paper-2) 100%); border:1px solid var(--edge); border-radius:12px; box-shadow:0 20px 40px -18px rgba(0,0,0,.55),0 4px 10px rgba(0,0,0,.28),0 1px 0 rgba(255,255,255,.4) inset; animation:cbrise .45s cubic-bezier(.2,1,.3,1) both; }
-.rpg-cb .col::before { content:""; position:absolute; inset:0; pointer-events:none; border-radius:inherit; mix-blend-mode:multiply; background:repeating-linear-gradient(91deg,rgba(122,92,48,.035) 0 1px,transparent 1px 5px); }
+.rpg-cb .col::before { content:""; position:absolute; inset:0; pointer-events:none; border-radius:inherit; background:repeating-linear-gradient(91deg,rgba(104,78,40,.045) 0 1px,transparent 1px 5px); }
 @keyframes cbrise { from{opacity:0;transform:translateY(16px);} to{opacity:1;transform:none;} }
 .rpg-cb .col.side { flex:1 1 186px; min-width:174px; padding:13px 12px; display:flex; flex-direction:column; }
 .rpg-cb .col.bench { flex:1 1 288px; min-width:262px; padding:15px 15px 18px; animation-delay:.06s; }
@@ -641,4 +650,30 @@
 #rpg-vnd-body.vnd-quiet .vnf-tbin,
 #rpg-vnd-body.vnd-quiet .vnf-scard,
 #rpg-vnd-body.vnd-quiet .rpg-cb .col,
-#rpg-vnd-body.vnd-quiet .vnf-panel { animation: none !important; }
+#rpg-vnd-body.vnd-quiet .vnf-panel,
+/* The four that were missed, and they are the ones you actually see.
+
+   .chip is a recipe card: clicking one rebuilt the bench and every chip popped in
+   from nothing again — that is the flicker in the crafting screen.
+
+   .rpg-vnd-row and .rpg-vnd-quest are the rows of the shop and quest lists, so
+   buying something made the whole list fade in again.
+
+   .vnf-panel already had its drop suppressed, but the panel is also the thing that
+   carries vnf-drop, and that one plays on the element itself. */
+/* vnf-drop animates OPACITY from zero with fill-mode "both", so a rebuilt panel is
+   literally see-through for half a second — that is the ghosted window in the
+   screenshot, not a redraw of its contents. The rule below already listed .vnf-panel,
+   but the flag it depends on was never set on the path that buying takes. */
+#rpg-vnd-body.vnd-quiet .chip,
+#rpg-vnd-body.vnd-quiet .rpg-vnd-row,
+#rpg-vnd-body.vnd-quiet .rpg-vnd-quest,
+#rpg-vnd-body.vnd-quiet .cnode,
+#rpg-vnd-body.vnd-quiet .shine { animation: none !important; }
+
+/* Kept alive on purpose: these loop and are part of how the bench reads, not an
+   entrance. Re-stated after the rule above, which would otherwise catch them. */
+#rpg-vnd-body.vnd-quiet .craft-btn.ready { animation: cbready 1.8s ease-in-out infinite !important; }
+#rpg-vnd-body.vnd-quiet .ring { animation: cbspin 34s linear infinite !important; }
+#rpg-vnd-body.vnd-quiet .casting .ring { animation: cbspinfast .9s cubic-bezier(.4,0,.2,1) !important; }
+#rpg-vnd-body.vnd-quiet .casting .energy { animation: cbflow .4s linear infinite !important; }
