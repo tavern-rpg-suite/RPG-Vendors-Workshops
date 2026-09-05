@@ -14,6 +14,8 @@ A SillyTavern extension that fills your world with **vendors, crafters and train
 
 ## ✨ What a vendor can do
 
+<img width="500" height="610" alt="Screenshot_26" src="https://github.com/user-attachments/assets/04102bfb-f442-403f-a618-cbca1522b020" />
+
 Each vendor is a character card with a **type** (cook, apothecary, tailor, blacksmith, jeweller, merchant, **trainer**, or custom) and tabs:
 
 - 🛒 **Shop** — 4–5 goods that fit the trade, era and personality, with prices and weights. **Re‑rolling doesn't repeat itself** — the vendor remembers what it has offered and the model is told to bring fresh stock.
@@ -23,6 +25,8 @@ Each vendor is a character card with a **type** (cook, apothecary, tailor, black
 - ⚗️ **Craft** — a full three‑panel **workbench** (see below). For **trainers** this tab becomes **Training**.
 
 ## ⚗️ Crafting bench
+
+<img width="825" height="658" alt="Screenshot_27" src="https://github.com/user-attachments/assets/c9f6b5bf-35c6-41e1-b05f-9ce53981f4da" />
 
 A triptych: **Recipes** · a **circle** you fill with ingredients · your **Ingredients**.
 
@@ -69,3 +73,8 @@ Copy the `RPG-Vendors-Workshops` folder into your third‑party extensions folde
 - **"Reward:" toast was empty.** Fixed in 1.30.x — a duplicated i18n key was overriding the reward text.
 - **Learning a recipe at one vendor changed another.** Vendors are independent; 1.29.0 also hardened editing so per‑vendor recipes/skill/training are never wiped.
 - **Generation does nothing.** Shop, recipes, quests, crafting and training each need a working URL / key / model.
+
+---
+## ✨ Screenshots
+
+<img width="1903" height="870" alt="Preview-RPG Vendors   Workshops" src="https://github.com/user-attachments/assets/14ef3836-563c-4416-bfaa-b8f848e5dee1" />
