@@ -1529,13 +1529,13 @@ function trainCardHtml(v, q) {
     if (q.done) act = `<span class="tq-state done">✓ ${escapeHtml(t('q_done'))}</span>`;
     else if (locked) act = `<span class="tq-state lock">🔒 ${escapeHtml(t('q_lockedlv', { lv: q.minLevel || 1 }))}</span>`;
     else {
-        const fail = `<button class="vnf-btn b-red tq-fail" data-q="${q.id}">${ic('x')}${escapeHtml(t('q_decline'))}</button>`;
+        const fail = `<button class="vnf-btn b-red tq-fail" data-q="${escapeHtml(q.id)}">${ic('x')}${escapeHtml(t('q_decline'))}</button>`;
         if (q.type === 'field') {
             act = (q.active
-                ? `<button class="vnf-btn b-navy tq-done-btn" data-q="${q.id}">${ic('check')}${escapeHtml(t('q_idid'))}</button><button class="vnf-btn b-paper tq-check" data-q="${q.id}">${ic('wand')}${escapeHtml(t('q_check'))}</button>`
-                : `<button class="vnf-btn b-violet tq-take" data-q="${q.id}">${ic('play')}${escapeHtml(t('q_take'))}</button>`) + fail;
+                ? `<button class="vnf-btn b-navy tq-done-btn" data-q="${escapeHtml(q.id)}">${ic('check')}${escapeHtml(t('q_idid'))}</button><button class="vnf-btn b-paper tq-check" data-q="${escapeHtml(q.id)}">${ic('wand')}${escapeHtml(t('q_check'))}</button>`
+                : `<button class="vnf-btn b-violet tq-take" data-q="${escapeHtml(q.id)}">${ic('play')}${escapeHtml(t('q_take'))}</button>`) + fail;
         } else {
-            act = `<button class="vnf-btn b-violet tq-do" data-q="${q.id}">${ic('play')}${escapeHtml(t('q_practice'))}</button>` + fail;
+            act = `<button class="vnf-btn b-violet tq-do" data-q="${escapeHtml(q.id)}">${ic('play')}${escapeHtml(t('q_practice'))}</button>` + fail;
         }
     }
     return `<div class="vnf-quest ${q.done ? 'qdone' : ''} ${q.active ? 'active' : ''} ${q.grad ? 'qgrad' : ''} ${q.drill ? 'drill' : ''}">
@@ -1761,7 +1761,7 @@ function cbRenderRecipes(v) {
             const isSp = r.kind === 'sharpen', isRp = r.kind === 'repair';
             const mk = isSp ? '⚒ ' : (isRp ? '🛠 ' : '');
             const tag = isSp ? escapeHtml(t('sharpen_tag', { grade: t('grade_' + r.targetGrade) })) : (isRp ? escapeHtml(t('repair_tag')) : '★'.repeat(r.stars));
-            html += `<button class="recipe ${benchSel === r.id ? 'sel' : ''}" data-r="${r.id}"><div class="rn"><span class="mark">${mk}${escapeHtml(r.name)}</span><span class="rhunt" data-hunt="${r.id}" title="${escapeHtml(t('forage_this'))}">🔎</span></div><span class="rtag">${tag}</span>${r.result ? `<div class="rdesc">${escapeHtml(r.result)}</div>` : ''}<div class="rneed-h">${escapeHtml(t('recipe_ing'))}</div><div class="needs2">${needs2}</div></button>`;
+            html += `<button class="recipe ${benchSel === r.id ? 'sel' : ''}" data-r="${escapeHtml(r.id)}"><div class="rn"><span class="mark">${mk}${escapeHtml(r.name)}</span><span class="rhunt" data-hunt="${escapeHtml(r.id)}" title="${escapeHtml(t('forage_this'))}">🔎</span></div><span class="rtag">${tag}</span>${r.result ? `<div class="rdesc">${escapeHtml(r.result)}</div>` : ''}<div class="rneed-h">${escapeHtml(t('recipe_ing'))}</div><div class="needs2">${needs2}</div></button>`;
         } else {
             // unlearned: ingredients stay hidden until the recipe is learned
             html += `<div class="recipe locked"><div class="rn">🔒 ${escapeHtml(r.name)} <span class="rtag">${'★'.repeat(r.stars)}</span></div><div class="rlock">${escapeHtml(t('r_locked_hint'))}</div></div>`;
@@ -1815,7 +1815,7 @@ function cbRenderBench(v) {
         sharpPicker = `<div class="cb-sharp"><div class="cb-sharp-h">${escapeHtml(t(headKey))}</div>` +
             (!eqApi() ? `<div class="cb-sharp-none">${escapeHtml(t('sharpen_noeq'))}</div>` :
                 targets.length
-                    ? `<select id="cb-sharptgt" class="cb-sharpsel"><option value="">${escapeHtml(t('sharpen_choose'))}</option>${targets.map(x => `<option value="${x.key}" ${sharpenTarget === x.key ? 'selected' : ''}>${escapeHtml(x.label)}</option>`).join('')}</select>`
+                    ? `<select id="cb-sharptgt" class="cb-sharpsel"><option value="">${escapeHtml(t('sharpen_choose'))}</option>${targets.map(x => `<option value="${escapeHtml(x.key)}" ${sharpenTarget === x.key ? 'selected' : ''}>${escapeHtml(x.label)}</option>`).join('')}</select>`
                     : `<div class="cb-sharp-none">${escapeHtml(t(noneKey))}</div>`)
             + (isSharp && r.targetGrade === 4 ? `<div class="cb-sharp-warn">${escapeHtml(t('sharpen_risky'))}</div>` : '') + `</div>`;
     }
@@ -1869,7 +1869,7 @@ function cbRenderInv(v) {
         });
         if (rows.length) {
             patchHtml(fl, `<div class="fq-h">${escapeHtml(t('forage_active'))}</div>` + rows.map(r =>
-                `<div class="fq-quest"><span class="fq-x" data-fq="${r.id}" title="${escapeHtml(t('forage_cancel'))}">✕</span>` +
+                `<div class="fq-quest"><span class="fq-x" data-fq="${escapeHtml(r.id)}" title="${escapeHtml(t('forage_cancel'))}">✕</span>` +
                 r.pend.slice(0, 12).map(i => `<div class="fq-row"><b>${escapeHtml(i.name)}</b>${i.where ? `<span>${escapeHtml(i.where)}</span>` : ''}</div>`).join('') +
                 `</div>`).join('') + `<div class="fq-note">${escapeHtml(t('forage_hint'))}</div>`);
             fl.style.display = '';
@@ -2523,7 +2523,7 @@ function tabHtml(v) {
                 <div class="nm"><span class="mark">${escapeHtml(g.name)}</span></div>
                 ${g.desc ? `<div class="ds">${escapeHtml(g.desc)}</div>` : ''}
                 <div class="foot"><span class="price">${ic('coin')} ${g.price}</span>
-                <button class="vnf-btn b-navy buy vnf-buy" data-id="${g.id}">${ic('cart')}${escapeHtml(t('buy'))}</button></div>
+                <button class="vnf-btn b-navy buy vnf-buy" data-id="${escapeHtml(g.id)}">${ic('cart')}${escapeHtml(t('buy'))}</button></div>
             </div>`;
         }).join('') + `</div>` : `<div class="vnf-empty">${escapeHtml(t('no_goods'))}</div>`;
         h += `<div class="vnf-shopfoot">`;
@@ -2556,11 +2556,11 @@ function tabHtml(v) {
                     ${q.desc ? `<div class="qd">${escapeHtml(q.desc)}</div>` : ''}
                     <div class="meta"><b>${escapeHtml(t('q_req'))}</b> ${escapeHtml(q.requirement)}<br><b>${escapeHtml(t('q_reward'))}</b> ${escapeHtml(rewardText(q.reward))}</div>
                     <div class="acts">${active
-                        ? `<button class="vnf-btn b-navy vnf-qdone" data-id="${q.id}">${ic('check')}${escapeHtml(t('q_complete'))}</button>
-                           <button class="vnf-btn b-red vnf-qfail" data-id="${q.id}">${ic('x')}${escapeHtml(t('q_fail'))}</button>
-                           <button class="vnf-btn b-paper vnf-qsay" data-id="${q.id}">${ic('leave')}${escapeHtml(t('q_announce'))}</button>`
-                        : `<button class="vnf-btn b-navy vnf-qaccept" data-id="${q.id}">${ic('play')}${escapeHtml(t('q_accept'))}</button>
-                           <button class="vnf-btn b-red vnf-qabandon" data-id="${q.id}">${ic('trash')}${escapeHtml(t('q_abandon'))}</button>`}</div>
+                        ? `<button class="vnf-btn b-navy vnf-qdone" data-id="${escapeHtml(q.id)}">${ic('check')}${escapeHtml(t('q_complete'))}</button>
+                           <button class="vnf-btn b-red vnf-qfail" data-id="${escapeHtml(q.id)}">${ic('x')}${escapeHtml(t('q_fail'))}</button>
+                           <button class="vnf-btn b-paper vnf-qsay" data-id="${escapeHtml(q.id)}">${ic('leave')}${escapeHtml(t('q_announce'))}</button>`
+                        : `<button class="vnf-btn b-navy vnf-qaccept" data-id="${escapeHtml(q.id)}">${ic('play')}${escapeHtml(t('q_accept'))}</button>
+                           <button class="vnf-btn b-red vnf-qabandon" data-id="${escapeHtml(q.id)}">${ic('trash')}${escapeHtml(t('q_abandon'))}</button>`}</div>
                 </div>`;
             }).join('');
             h += `<button class="vnf-btn b-violet vnf-getq" style="width:100%;margin-top:4px">${ic('wand')}${escapeHtml(t('q_get'))}</button>`;
@@ -2574,7 +2574,7 @@ function tabHtml(v) {
         if (!eq && !inv) h += `<div class="vnf-empty">${escapeHtml(t('no_eq'))}</div>`;
         else if (!targets.length) h += `<div class="vnf-empty">${escapeHtml(t('nothing_to_repair'))}</div>`;
         else {
-            const gearOpts = `<option value="">—</option>` + targets.map(g => `<option value="${g.value}" ${selSlot === g.value ? 'selected' : ''}>${escapeHtml(g.label)}: ${escapeHtml(g.name)} (${g.broken ? '✖ 0%' : Math.round(g.dur / (g.max || 100) * 100) + '%'})</option>`).join('');
+            const gearOpts = `<option value="">—</option>` + targets.map(g => `<option value="${escapeHtml(g.value)}" ${selSlot === g.value ? 'selected' : ''}>${escapeHtml(g.label)}: ${escapeHtml(g.name)} (${g.broken ? '✖ 0%' : Math.round(g.dur / (g.max || 100) * 100) + '%'})</option>`).join('');
             h += `<div class="vnf-footrow"><span class="lbl">${escapeHtml(t('gear_label'))}</span></div>
                 <div class="vnf-footrow"><select class="vnf-sel vnf-sel-gear">${gearOpts}</select></div>`;
             if (!inv) h += `<div class="vnf-empty">${escapeHtml(t('no_inv'))}</div>`;
@@ -2614,7 +2614,7 @@ function tabHtml(v) {
                         ? `<div class="rc-ing"><b>${escapeHtml(t('recipe_ing'))}</b> ${escapeHtml(r.ingredients.join(', ') || '\u2014')}</div>`
                         : (r.flavor ? `<div class="rc-flavor">${escapeHtml(r.flavor)}</div>` : ''))}
                 ${r.result ? `<div class="rc-res"><b>${escapeHtml(t('recipe_res'))}</b> ${escapeHtml(r.result)}</div>` : ''}
-                <div class="rc-foot">${r.learned ? `<span class="rc-known">${ic('check')} ${escapeHtml(t('r_known'))}</span>` : `<span class="rc-price">${ic('coin')} ${r.price}</span><button class="vnf-btn b-navy vnf-learn" data-id="${r.id}">${ic('cart')}${escapeHtml(t('r_learn'))}</button>`}</div>
+                <div class="rc-foot">${r.learned ? `<span class="rc-known">${ic('check')} ${escapeHtml(t('r_known'))}</span>` : `<span class="rc-price">${ic('coin')} ${r.price}</span><button class="vnf-btn b-navy vnf-learn" data-id="${escapeHtml(r.id)}">${ic('cart')}${escapeHtml(t('r_learn'))}</button>`}</div>
             </div>`;
         }).join('');
     }
