@@ -17,6 +17,7 @@ const defaultSettings = {
     strictJson: true,
     language: 'en',
     injectDepth: 2,
+    inChat: false,          // off: the notes go to the top of the prompt, as always; on: into the chat at the depth (a local model then re-reads only the end)
     cardInject: true,
     questGlobal: true,
     questsNeedPresence: false,
@@ -126,7 +127,7 @@ const I18N = {
         inject_at: '{{user}} is at "{name}", a {type}. This vendor knows their own trade and can see the gear {{user}} brought to repair',
         inject_card_head: 'You are {vendor}, a {role}. You know your own business:', inject_goods: 'your shop currently stocks: {goods}.', inject_myquests: 'jobs you have given {{user}}: {list}.',
         set_title: 'RPG Vendors & Workshops', set_enable: 'Enable Vendors',
-        set_api: 'API Settings', set_depth: 'Context injection depth:',
+        set_api: 'API Settings', set_depth: 'Context injection depth:', set_inchat: 'Insert in chat', set_depth_off: 'Works with "Insert in chat"',
         set_lang: 'Language:', set_url: 'URL', set_key: 'API Key', set_model: 'Model'
     },
     ru: {
@@ -201,7 +202,7 @@ const I18N = {
         inject_at: '{{user}} находится у «{name}» ({type}). Этот вендор знает своё ремесло и видит снаряжение, которое {{user}} принёс на починку',
         inject_card_head: 'Ты — {vendor}, {role}. Ты знаешь своё дело:', inject_goods: 'сейчас у тебя в продаже: {goods}.', inject_myquests: 'задания, которые ты дал {{user}}: {list}.',
         set_title: 'RPG Vendors & Workshops', set_enable: 'Включить вендоров',
-        set_api: 'Настройки API', set_depth: 'Глубина вставки в контекст:',
+        set_api: 'Настройки API', set_depth: 'Глубина вставки в контекст:', set_inchat: 'Вставлять в чат', set_depth_off: 'Работает с «Вставлять в чат»',
         set_lang: 'Язык:', set_url: 'URL', set_key: 'API-ключ', set_model: 'Модель'
     }
 };
@@ -679,17 +680,19 @@ function rewardText(r) {
     if (r.kind === 'buff') return t('reward_buff', { name: r.name });
     return r.name || '';
 }
+// where the notes go: the top of the prompt (as always), or the chat at their depth
+function injPos() { return settings.inChat ? 1 : 2; }
 function buildInjection() {
     if (!settings.enabled || !state || settings.injectDepth < 0) {
-        setExtensionPrompt(PROMPT_KEY, '', 2, 0, false, extension_prompt_roles.SYSTEM);
-        setExtensionPrompt(PROMPT_KEY_Q, '', 2, 0, false, extension_prompt_roles.SYSTEM);
-        setExtensionPrompt(PROMPT_KEY_CARD, '', 2, 0, false, extension_prompt_roles.SYSTEM);
+        setExtensionPrompt(PROMPT_KEY, '', injPos(), 0, false, extension_prompt_roles.SYSTEM);
+        setExtensionPrompt(PROMPT_KEY_Q, '', injPos(), 0, false, extension_prompt_roles.SYSTEM);
+        setExtensionPrompt(PROMPT_KEY_CARD, '', injPos(), 0, false, extension_prompt_roles.SYSTEM);
         return;
     }
     // ambient note (you are standing at a workshop) — at the normal depth
     const v = state.vendors.find(x => x.id === state.activeVendorId);
     const ambient = v ? `\n[${t('inject_at', { name: v.name, type: vendorRole(v).toLowerCase() })}.]\n` : '';
-    setExtensionPrompt(PROMPT_KEY, ambient, 2, settings.injectDepth, false, extension_prompt_roles.SYSTEM);
+    setExtensionPrompt(PROMPT_KEY, ambient, injPos(), settings.injectDepth, false, extension_prompt_roles.SYSTEM);
 
     // active quests — injected at the very END (depth 0), right before the reply, clearly framed; removed on completion
     const aq = (settings.cardInject && settings.questGlobal) ? (state.quests || []).filter(q => q.status === 'active') : [];
@@ -700,7 +703,7 @@ function buildInjection() {
             return `[${t('inject_quest', { vendor: qv ? qv.name : '?', role: qv ? vendorRole(qv).toLowerCase() : 'vendor', title: q.title, req: q.requirement, reward: rewardText(q.reward) })}]`;
         }).join('\n') + '\n';
     }
-    setExtensionPrompt(PROMPT_KEY_Q, qtext, 2, settings.injectDepth, false, extension_prompt_roles.SYSTEM);
+    setExtensionPrompt(PROMPT_KEY_Q, qtext, injPos(), settings.injectDepth, false, extension_prompt_roles.SYSTEM);
 }
 
 // Who is about to reply? (solo: the character; group: the current speaker)
@@ -715,18 +718,18 @@ function resolveSpeaker() {
 // Card-scoped: a vendor's stock + their own jobs are injected ONLY before THAT vendor's card replies.
 function buildCardInjection() {
     if (!settings.enabled || !state || settings.injectDepth < 0 || !settings.cardInject) {
-        setExtensionPrompt(PROMPT_KEY_CARD, '', 2, 0, false, extension_prompt_roles.SYSTEM); return;
+        setExtensionPrompt(PROMPT_KEY_CARD, '', injPos(), 0, false, extension_prompt_roles.SYSTEM); return;
     }
     const speaker = resolveSpeaker();
     const vendor = speaker ? (state.vendors || []).find(v => v.charName && v.charName === speaker) : null;
-    if (!vendor) { setExtensionPrompt(PROMPT_KEY_CARD, '', 2, 0, false, extension_prompt_roles.SYSTEM); return; }
+    if (!vendor) { setExtensionPrompt(PROMPT_KEY_CARD, '', injPos(), 0, false, extension_prompt_roles.SYSTEM); return; }
     const goods = (vendor.stock || []).map(g => g.name).filter(Boolean);
     const myQuests = (state.quests || []).filter(q => q.vendorId === vendor.id && q.status === 'active');
     const parts = [];
     if (goods.length) parts.push(t('inject_goods', { goods: goods.join(', ') }));
     if (myQuests.length) parts.push(t('inject_myquests', { list: myQuests.map(q => `"${q.title}" (${q.requirement} -> ${rewardText(q.reward)})`).join('; ') }));
     const text = parts.length ? `\n[${t('inject_card_head', { vendor: vendor.name, role: vendorRole(vendor).toLowerCase() })} ${parts.join(' ')}]\n` : '';
-    setExtensionPrompt(PROMPT_KEY_CARD, text, 2, settings.injectDepth, false, extension_prompt_roles.SYSTEM);
+    setExtensionPrompt(PROMPT_KEY_CARD, text, injPos(), settings.injectDepth, false, extension_prompt_roles.SYSTEM);
 }
 
 // ---- the core: repair gear with an inventory item, AI-validated ----
@@ -2788,6 +2791,7 @@ function settingsHtml() {
                 <label>${t('set_depth')}</label>
                 <input type="number" id="rpg-vnd-depth" class="text_pole" min="0" style="width:55px;">
             </div>
+            <label class="checkbox_label"><input type="checkbox" id="rpg-vnd-inchat"> ${t('set_inchat')}</label>
             <label class="checkbox_label"><input type="checkbox" id="rpg-vnd-autonote"> ${t('set_autonote')}</label>
             <label class="checkbox_label"><input type="checkbox" id="rpg-vnd-reqai"> ${t('set_reqai')}</label>
             <label class="checkbox_label"><input type="checkbox" id="rpg-vnd-cardinject"> ${t('set_cardinject')}</label>
@@ -2798,8 +2802,42 @@ function settingsHtml() {
 </div>`;
 }
 
+
+/* The settings in framed groups, the way RPG Vitals has them: each <h4> heading and what follows it,
+   up to the next heading, go into one frame. Nothing is rebuilt — the same elements are moved, so every
+   id and every handler stays as it was. A nested drawer stands on its own; the old rulers go. */
+function frameSettings(root) {
+    if (!root) return;
+    root.querySelectorAll('.inline-drawer-content').forEach(content => {
+        if (content.dataset.framed) return;
+        content.dataset.framed = '1';
+        let box = null;
+        [...content.children].forEach(el => {
+            if (el.tagName === 'H4') {
+                box = document.createElement('div');
+                box.className = 'tsx-frame';
+                content.insertBefore(box, el);
+                el.classList.add('tsx-framehead');
+                box.appendChild(el);
+                return;
+            }
+            if (el.tagName === 'HR' && el.classList.contains('sysHR')) { el.remove(); return; }
+            // a drawer inside the settings: framed like the rest, still opening and closing
+            if (el.classList.contains('inline-drawer')) { el.classList.add('tsx-subframe'); box = null; return; }
+            // what follows a drawer, before the next heading, is not left loose between frames
+            if (!box && content.querySelector(':scope > .tsx-frame, :scope > .tsx-subframe')) {
+                box = document.createElement('div');
+                box.className = 'tsx-frame tsx-loose';
+                content.insertBefore(box, el);
+            }
+            if (box) box.appendChild(el);
+        });
+    });
+}
+
 function setupUI() {
     $('#extensions_settings').append(settingsHtml());
+    frameSettings(document.querySelector('.rpg-vnd-settings'));
     $('.rpg-vnd-settings .rpg-vnd-toggle').on('click', function () {
         $(this).next('.inline-drawer-content').slideToggle();
         $(this).find('.inline-drawer-icon').toggleClass('down up');
@@ -2819,6 +2857,10 @@ function setupUI() {
     $('#rpg-vnd-key').val(settings.apiKey).on('change', function () { settings.apiKey = $(this).val(); saveSettings(); });
     $('#rpg-vnd-model').val(settings.model).on('change', function () { settings.model = $(this).val(); saveSettings(); });
     $('#rpg-vnd-depth').val(settings.injectDepth).on('change', function () { settings.injectDepth = Math.max(0, parseInt($(this).val()) || 0); $(this).val(settings.injectDepth); saveSettings(); buildInjection(); buildCardInjection(); });
+    // the depth only means something in the chat: at the top of the prompt SillyTavern ignores it
+    const depthLock = () => $('#rpg-vnd-depth').css('opacity', settings.inChat ? '' : '0.55').attr('title', settings.inChat ? '' : t('set_depth_off'));
+    $('#rpg-vnd-inchat').prop('checked', !!settings.inChat).on('change', function () { settings.inChat = this.checked; saveSettings(); depthLock(); buildInjection(); buildCardInjection(); });
+    depthLock();
     $('#rpg-vnd-autonote').prop('checked', settings.autoChatNote !== false).on('change', function () { settings.autoChatNote = this.checked; saveSettings(); });
     $('#rpg-vnd-reqai').prop('checked', !!settings.requireAiCheck).on('change', function () { settings.requireAiCheck = this.checked; saveSettings(); });
     $('#rpg-vnd-cardinject').prop('checked', settings.cardInject !== false).on('change', function () { settings.cardInject = this.checked; saveSettings(); buildInjection(); buildCardInjection(); });

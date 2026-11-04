@@ -677,3 +677,16 @@
 #rpg-vnd-body.vnd-quiet .ring { animation: cbspin 34s linear infinite !important; }
 #rpg-vnd-body.vnd-quiet .casting .ring { animation: cbspinfast .9s cubic-bezier(.4,0,.2,1) !important; }
 #rpg-vnd-body.vnd-quiet .casting .energy { animation: cbflow .4s linear infinite !important; }
+
+/* settings in framed groups, as in RPG Vitals */
+.rpg-vnd-settings .tsx-frame { margin: 8px 0; border: 1px solid var(--SmartThemeBorderColor, rgba(255, 255, 255, .15)); border-radius: 8px; padding: 8px 10px 10px; background: rgba(0, 0, 0, .12); }
+.rpg-vnd-settings .tsx-frame > h4.tsx-framehead { margin: 0 0 6px; padding: 0; font-size: 1em; font-weight: 700; opacity: .92; border: 0; }
+.rpg-vnd-settings .tsx-frame > *:last-child { margin-bottom: 0; }
+
+/* a drawer inside the settings, framed like the groups around it */
+.rpg-vnd-settings .tsx-subframe { margin: 8px 0; border: 1px solid var(--SmartThemeBorderColor, rgba(255, 255, 255, .15)); border-radius: 8px; background: rgba(0, 0, 0, .12); }
+.rpg-vnd-settings .tsx-subframe > .inline-drawer-header { background: none !important; border: 0 !important; box-shadow: none; padding: 8px 10px !important; margin: 0 !important; min-height: 0; border-radius: 8px; }
+.rpg-vnd-settings .tsx-subframe > .inline-drawer-header b, .rpg-vnd-settings .tsx-subframe > .inline-drawer-header span { font-weight: 700; }
+.rpg-vnd-settings .tsx-subframe > .inline-drawer-header .inline-drawer-icon { font-size: 1em; opacity: .65; }
+.rpg-vnd-settings .tsx-subframe > .inline-drawer-content { padding: 0 10px 10px; }
+.rpg-vnd-settings .tsx-subframe .tsx-frame { background: rgba(0, 0, 0, .08); }
