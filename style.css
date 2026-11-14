@@ -27,7 +27,7 @@
 #rpg-vnd-btn:hover { transform: scale(1.1); box-shadow: 0 6px 20px rgba(201,164,74,0.55); }
 
 .rpg-vnd-modal {
-    position: fixed; top: 52px; left: calc(50vw - 236px); width: 472px; max-width: 96%;
+    position: fixed; top: 52px; left: max(2vw, calc(50vw - 236px)); width: 472px; max-width: 96%;   /* on a phone the centre formula went off the left edge */
     z-index: 3001; display: flex; flex-direction: column; box-sizing: border-box;
     opacity: 0; pointer-events: none; transition: opacity 0.2s ease-in-out;
     background: none; border: none; border-radius: 0; box-shadow: none; color: var(--pg-ink);
@@ -176,6 +176,8 @@
 #rpg-vnd-body .b-paper:active { box-shadow:none; }
 #rpg-vnd-body .b-red { background:#f6e2d8; color:#9a3a2c; border:1px solid #e0b3a4; box-shadow:0 2px 0 #e0b3a4; }
 #rpg-vnd-body .b-red:active { box-shadow:none; }
+/* the second click deletes: the button says so and turns solid */
+#rpg-vnd-body .b-red.sure { background:#8a2c23; color:#fff7ef; border-color:#6f160d; box-shadow:0 2px 0 #591a15; }
 #rpg-vnd-body .b-ghost { background:transparent; border:1px solid var(--edge); color:var(--sepia); }
 #rpg-vnd-body .b-ghost:hover { border-color:var(--oxblood); color:var(--oxblood); }
 #rpg-vnd-body .vnf-sel, #rpg-vnd-body .vnf-num { background:#ece2c5; border:1px solid var(--edge); border-radius:8px; font-family:"PT Mono",monospace; font-size:11px; color:var(--ink-soft); padding:9px 10px; cursor:pointer; }
@@ -690,3 +692,9 @@
 .rpg-vnd-settings .tsx-subframe > .inline-drawer-header .inline-drawer-icon { font-size: 1em; opacity: .65; }
 .rpg-vnd-settings .tsx-subframe > .inline-drawer-content { padding: 0 10px 10px; }
 .rpg-vnd-settings .tsx-subframe .tsx-frame { background: rgba(0, 0, 0, .08); }
+/* shops that run out: how many are left, sold out, and when the next delivery comes */
+#rpg-vnd-body .vnf-qty { font-family:"PT Mono",monospace; font-size:10px; letter-spacing:1px; color:#6c5029; margin-left:auto; margin-right:6px; }
+#rpg-vnd-body .vnf-sold { font-family:"PT Mono",monospace; font-size:10px; letter-spacing:2px; text-transform:uppercase; color:#8a2c23; border:1.5px solid #8a2c23; border-radius:3px; padding:3px 7px 2px; transform:rotate(-4deg); }
+#rpg-vnd-body .vnf-scard.sold .nm, #rpg-vnd-body .vnf-scard.sold .ds { color:#6c5029; }
+#rpg-vnd-body .vnf-wait { font-family:"PT Mono",monospace; font-size:11px; letter-spacing:1px; color:#6c5029; border:1px dashed #b6a47b; border-radius:4px; padding:6px 10px; }
+#rpg-vnd-body .vnf-oldprice { color:#6c5029; font-weight:400; text-decoration-thickness:1px; }

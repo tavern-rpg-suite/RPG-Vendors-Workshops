@@ -23,6 +23,8 @@ const defaultSettings = {
     questsNeedPresence: false,
     autoChatNote: true,
     requireAiCheck: false,
+    shopLimited: false,     // on: goods come in a few pieces each and a shop restocks only every shopEvery messages
+    shopEvery: 20,
     chatStates: {},
     chatStamps: {}   // chatId -> last-used timestamp, lets stale states be pruned
 };
@@ -52,11 +54,78 @@ function aiName(x, fallback = null, maxLen = 60) {
 function escapeHtml(x) {
     return String(x ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
+/* What small local models get wrong in a JSON answer, put right before it is read:
+   quotes inside a text, line breaks inside a text, // comments, a missing comma.
+   Only the punctuation is touched, never the words. Shared by both engines. */
+function repairModelJson(src) {
+    const t0 = String(src || '');
+    let out = '', inS = false, q = '"', isKey = false, k = 0;
+    const stack = [];   // the open { and [ around
+    const nextSolid = j => { while (j < t0.length && /\s/.test(t0[j])) j++; return j; };
+    for (; k < t0.length; k++) {
+        const c = t0[k];
+        if (inS) {
+            if (c === '\\') { if (t0[k + 1] === "'") out += "'"; else out += c + (t0[k + 1] ?? ''); k++; continue; }
+            if (c === '"' && q === "'") { out += '\\"'; continue; }                 // 'say "no"' -> "say \"no\""
+            if (isKey && (c === ':' || c === '\n')) { inS = false; out += '"' + (c === ':' ? ':' : '\n'); continue; }   // "fatigue: 5  -> "fatigue": 5
+            if (c === q) {
+                const j = nextSolid(k + 1), d = t0[j];
+                // a real closing quote is followed by , : } ] or the end; a quote then a new line then "..." is a missing comma
+                const after = d === ',' || d === ':' ? t0[nextSolid(j + 1)] : '';
+                const ends = j >= t0.length || '}]'.includes(d)
+                    || (d === ',' && (after === undefined || '"\'{[}]/'.includes(after)))           // "...", "next"  — not  "a "ghost", it walks"
+                    || (d === ':' && (after === undefined || /["'{\[\d\-tfn]/.test(after)))
+                    || (d === '"' && /[\r\n]/.test(t0.slice(k + 1, j)));
+                if (ends) { inS = false; out += '"'; }
+                else out += q === '"' ? '\\"' : "'";
+                continue;
+            }
+            if (c === '\n') { out += '\\n'; continue; }
+            if (c === '\r') continue;
+            if (c === '\t') { out += ' '; continue; }
+            out += c; continue;
+        }
+        if (c === '/' && t0[k + 1] === '/') { while (k < t0.length && t0[k] !== '\n') k++; out += '\n'; continue; }
+        if (c === '/' && t0[k + 1] === '*') { const e = t0.indexOf('*/', k + 2); k = e < 0 ? t0.length : e + 1; continue; }
+        if (c === '"' || c === "'") {
+            // "a" "b", } {, ] [, 5 "b" with no comma between them
+            const prev = out.replace(/\s+$/, '').slice(-1);
+            // a name in an object (not a value, not an item of a list): "fatigue: 5 lost its closing quote
+            q = c; isKey = stack[stack.length - 1] === '{' && prev !== ':';
+            if (prev && /["}\]\w]/.test(prev) && /\s$/.test(out)) out = out.replace(/\s+$/, '') + ',' + out.match(/\s+$/)[0];   // after a text, an object, a list, a number or true/false/null
+            inS = true; out += '"'; continue;
+        }
+        if (c === '}' || c === ']') stack.pop();
+        if (c === '{' || c === '[') {
+            stack.push(c);
+            const prev = out.replace(/\s+$/, '').slice(-1);
+            if (prev && '"}]'.includes(prev)) out = out.replace(/\s+$/, '') + ',' + (out.match(/\s+$/) || [''])[0];
+        }
+        out += c;
+    }
+    return out;
+}
+// the answer of a model: the text, or (a thinking model) its reasoning, or (a completion server) "text"
+function modelAnswerText(data) {
+    const c0 = (data && data.choices && data.choices[0]) || {};
+    const m = c0.message || {};
+    return String(m.content || c0.text || m.reasoning_content || m.reasoning || '').trim();
+}
+
+// the JSON of an answer, read leniently: fences, a stray trailing comma, curly quotes, then the full repair
+function looseJson(content) {
+    let x = String(content || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '');
+    const m = x.match(/\{[\s\S]*\}/);
+    x = m ? m[0] : x;
+    try { return JSON.parse(x); } catch (e) { /* tidy and try again */ }
+    try { return JSON.parse(x.replace(/,\s*([}\]])/g, '$1').replace(/[“”]/g, '"')); } catch (e) { /* the punctuation of a local model */ }
+    return JSON.parse(repairModelJson(x).replace(/,\s*([}\]])/g, '$1'));
+}
 function genLang() { return settings.language === 'ru' ? 'Russian' : 'English'; }
 
 const I18N = {
     en: {
-        tab_recipes: 'Recipes', skill_lbl: 'Skill', lvl_short: 'Lv', recipes_gen: '✨ Generate recipes (AI)', recipes_none: 'No recipes yet — generate some.', recipe_ing: 'Ingredients:', recipe_res: 'Result:', r_learn: 'Learn', r_known: 'Known', recipes_gen_run: 'The vendor jots down recipes...', recipes_gen_done: 'Recipes added!', recipes_gen_err: 'Could not generate — check URL / key / model.', r_learned: 'Learned "{name}" (+{xp} skill XP).', skill_up: '{skill} is now level {lvl}!',
+        grade_1: 'Worn', grade_2: 'Honed', grade_3: 'Fine', grade_4: 'Legendary', gt_weapon: 'weapon', gt_armor: 'armour', gt_clothing: 'clothing', gt_material: 'material', gt_food: 'food', gt_consumable: 'consumable', gt_misc: 'misc', del_sure: 'Delete for good?', fb_vendor: 'Vendor', fb_item: 'Item', fb_material: 'Material', fb_reward: 'Reward', fb_botched: 'Botched item', fb_botched_of: '{name} (botched)', fb_concoction: 'Concoction', fb_botched_mix: 'Botched mix', fb_lesson: 'Lesson', fb_drill: 'Drill', fb_kit: 'Repair kit', tab_recipes: 'Recipes', cr_repair: 'Repairs +{n}%', cr_food: 'Your food fills +{n}%', cr_heal: 'Your potions heal +{n}%', cr_price: 'Prices −{n}%', cr_sell: 'Selling +{n}%', cr_train: 'Lessons give skill points', cr_none: 'grows from level 2', pts_got: '{skill} {lvl}: +1 skill point for the tree of RPG Vitals.', set_shoplimit: 'Shops run out: a few of each good, new stock only every', set_shopevery: 'messages', sold_out: 'Sold out', left_n: '{n} left', restock_in: 'New stock in {n} msg.', restock_wait: 'Nothing new yet — come back in {n} messages.', skill_lbl: 'Skill', lvl_short: 'Lv', recipes_gen: '✨ Generate recipes (AI)', recipes_none: 'No recipes yet — generate some.', recipe_ing: 'Ingredients:', recipe_res: 'Result:', r_learn: 'Learn', r_known: 'Known', recipes_gen_run: 'The vendor jots down recipes...', recipes_gen_done: 'Recipes added!', recipes_gen_err: 'Could not generate — check URL / key / model.', r_learned: 'Learned "{name}" (+{xp} skill XP).', skill_up: '{skill} is now level {lvl}!',
         tab_craft: 'Craft', tab_train: 'Training',
         ing_section: 'Ingredients', ing_gen: '✨ Generate ingredients (AI)', ing_none: 'No ingredient list yet.', ing_gather: '🔍 Gather one', ing_where: 'Found:', ing_got: 'Found: {name} ({where}).', ing_gen_run: 'Cataloguing ingredients...', ing_gen_done: 'Ingredients catalogued!', ing_need_recipes: 'Generate recipes first — ingredients come from them.', ing_goto: '{name} is found at {where}. Go there to gather it.', forage_take: '🔎 Take foraging quest', forage_run: 'Marking ingredients to forage...', forage_started: 'Hunt started — {n} ingredient(s). Search scenes with the 🔍 loupe.', forage_none_missing: 'You already have (or are hunting) everything these recipes need.', forage_need_recipe: 'Learn a recipe first — the hunt is for its ingredients.', forage_need_quest: 'The inventory / quest engine is not available.', forage_active: 'Foraging — look for:', forage_cancel: 'Cancel this hunt', forage_already_hunting: 'Already hunting these — see the list on the right (search scenes with the 🔍 loupe).', forage_this: 'Hunt only THIS recipe\'s missing ingredients', forage_hint: 'Use the 🔍 loupe on scene messages to find these (better in the right place).',
         craft_section: 'Craft a recipe', craft_recipe_lbl: 'Known recipe:', craft_btn: 'Craft', sharpen_btn: '⚒ Sharpen', sharpen_pick: 'Item to sharpen:', sharpen_choose: '— choose a piece —', sharpen_none: 'No equipped piece is at the right grade for this.', sharpen_noeq: 'Equipment module not available.', sharpen_risky: '⚠ Reaching Legendary can fail (materials are lost).', sharpen_need_target: 'Choose an item to sharpen first.', sharpen_ok: 'Sharpened! Now {grade}.', sharpen_fail: 'The sharpening failed — materials lost.', sharpen_tag: '⚒ → {grade}', sharpen_recipe_desc: 'A reforging procedure that upgrades a {cat} to {grade} (one tier up). Learn it, gather its materials, then sharpen at the bench.', sharpen_cat_weapon: 'weapon', sharpen_cat_armor: 'piece of armour', repair_btn: '🛠 Repair', repair_pick: 'Item to repair:', repair_none: 'Nothing of this kind needs repair.', repair_broken: 'broken', repair_ok: 'Repaired — good as new.', repair_fail: 'Nothing to repair.', repair_tag: '🛠 kit', repair_recipe_desc: 'A repair kit that restores the durability of a {cat}. Learn it, gather materials, then mend at the bench.', craft_need: 'Missing: {list}', craft_none_known: 'Learn a recipe first (Recipes tab).', craft_known_h: 'You can craft:', craft_locked_h: 'Not yet learned:', r_locked_hint: 'Learn in the Recipes tab.', open_bench: '⚗️ Open crafting bench', bench_tabhint: 'Recipes, ingredients and crafting open in a full workbench.', recipes_side: 'Recipes', ingredients_side: 'Ingredients', brew_hint: 'Pick a recipe on the left, or Freestyle to experiment.', cb_perfect: 'Exquisite!', cb_good: 'Good', cb_bad: 'Scorched…', cb_closed: 'Circle closed — hit Craft', cb_fill: 'Close the circle with ingredients', cb_cookhint: 'STOP THE FLAME IN THE GOLD ZONE — tap STOP or Space', cb_stop: 'STOP!', cb_needed: 'needed for the recipe', cb_ingredient: 'ingredient', craft_done: 'Crafted {name}!', craft_run: 'Working the craft...', craft_botched: 'Botched it — got {name} instead.', q_sloppy: 'Too sloppy — no reward. Try again.', craft_err: 'Craft failed — check URL / key / model.', brokendrop_toast: 'A broken {name} fell into your pack — someone could repair it.', brokendrop_qtitle: 'Repair: {name}', brokendrop_qdesc: 'Bring the broken {name} to {vendor} to be mended.', brokendrop_qreq: 'Have {vendor} repair the {name}.', brokendrop_note: '*[{user} finds a broken {name} — best take it to {vendor} the {role} for repair.]*', brokendrop_note_novendor: '*[{user} finds a broken {name} — it needs repairing by a craftsman.]*',
@@ -131,13 +200,13 @@ const I18N = {
         set_lang: 'Language:', set_url: 'URL', set_key: 'API Key', set_model: 'Model'
     },
     ru: {
-        tab_recipes: 'Рецепты', skill_lbl: 'Навык', lvl_short: 'Ур', recipes_gen: '✨ Сгенерировать рецепты (ИИ)', recipes_none: 'Рецептов пока нет — сгенерируй.', recipe_ing: 'Ингредиенты:', recipe_res: 'Результат:', r_learn: 'Изучить', r_known: 'Изучено', recipes_gen_run: 'Вендор набрасывает рецепты...', recipes_gen_done: 'Рецепты добавлены!', recipes_gen_err: 'Не удалось — проверь URL / ключ / модель.', r_learned: 'Изучен «{name}» (+{xp} к навыку).', skill_up: 'Навык «{skill}» вырос до уровня {lvl}!',
+        grade_1: 'Грубое', grade_2: 'Заточенное', grade_3: 'Тонкой работы', grade_4: 'Легендарное', gt_weapon: 'оружие', gt_armor: 'броня', gt_clothing: 'одежда', gt_material: 'материал', gt_food: 'еда', gt_consumable: 'расходник', gt_misc: 'разное', del_sure: 'Удалить насовсем?', fb_vendor: 'Вендор', fb_item: 'Предмет', fb_material: 'Материал', fb_reward: 'Награда', fb_botched: 'Испорченная вещь', fb_botched_of: '{name} (испорчено)', fb_concoction: 'Смесь', fb_botched_mix: 'Неудачная смесь', fb_lesson: 'Урок', fb_drill: 'Упражнение', fb_kit: 'Ремонтный набор', tab_recipes: 'Рецепты', cr_repair: 'Починка +{n}%', cr_food: 'Твоя еда сытнее +{n}%', cr_heal: 'Твои зелья лечат +{n}%', cr_price: 'Цены −{n}%', cr_sell: 'Продажа +{n}%', cr_train: 'Уроки дают очки навыка', cr_none: 'растёт со 2-го уровня', pts_got: '{skill} {lvl}: +1 очко навыка в древо RPG Vitals.', set_shoplimit: 'Товар кончается: по нескольку штук, новый завоз только раз в', set_shopevery: 'сообщ.', sold_out: 'Распродано', left_n: 'осталось {n}', restock_in: 'Завоз через {n} сообщ.', restock_wait: 'Нового товара пока нет — загляни через {n} сообщ.', skill_lbl: 'Навык', lvl_short: 'Ур', recipes_gen: '✨ Сгенерировать рецепты (ИИ)', recipes_none: 'Рецептов пока нет — сгенерируй.', recipe_ing: 'Ингредиенты:', recipe_res: 'Результат:', r_learn: 'Изучить', r_known: 'Изучено', recipes_gen_run: 'Вендор набрасывает рецепты...', recipes_gen_done: 'Рецепты добавлены!', recipes_gen_err: 'Не удалось — проверь URL / ключ / модель.', r_learned: 'Изучен «{name}» (+{xp} к навыку).', skill_up: 'Навык «{skill}» вырос до уровня {lvl}!',
         tab_craft: 'Крафт', tab_train: 'Тренировка',
         ing_section: 'Ингредиенты', ing_gen: '✨ Сгенерировать ингредиенты (ИИ)', ing_none: 'Списка ингредиентов пока нет.', ing_gather: '🔍 Добыть один', ing_where: 'Где:', ing_got: 'Найдено: {name} ({where}).', ing_gen_run: 'Собираю список ингредиентов...', ing_gen_done: 'Ингредиенты добавлены!', ing_need_recipes: 'Сначала сгенерируй рецепты — ингредиенты берутся из них.', ing_goto: '«{name}» находится: {where}. Иди туда, чтобы добыть.', forage_take: '🔎 Взять задание на сбор', forage_run: 'Отмечаю ингредиенты для сбора...', forage_started: 'Задание взято — {n} ингр. Ищи их лупой 🔍 в сценах.', forage_none_missing: 'Всё нужное для этих рецептов у тебя уже есть или уже в поиске.', forage_need_recipe: 'Сначала изучи рецепт — задание собирает его ингредиенты.', forage_need_quest: 'Движок инвентаря/заданий недоступен.', forage_active: 'Сбор — ищи:', forage_cancel: 'Отменить этот сбор', forage_already_hunting: 'Эти ингредиенты уже в поиске — список справа (ищи их лупой 🔍 в сценах).', forage_this: 'Искать ингредиенты только ЭТОГО рецепта', forage_hint: 'Наводи лупу 🔍 на сообщения сцены, чтобы найти их (в нужном месте шанс выше).',
-        craft_section: 'Скрафтить рецепт', craft_recipe_lbl: 'Изученный рецепт:', craft_btn: 'Скрафтить', sharpen_btn: '⚒ Заточить', sharpen_pick: 'Что точим:', sharpen_choose: '— выбери вещь —', sharpen_none: 'Нет надетой вещи нужного грейда для этого.', sharpen_noeq: 'Модуль экипировки недоступен.', sharpen_risky: '⚠ Заточка до Легендарного может провалиться (материалы сгорят).', sharpen_need_target: 'Сначала выбери, что точить.', sharpen_ok: 'Заточено! Теперь {grade}.', sharpen_fail: 'Заточка провалилась — материалы сгорели.', sharpen_tag: '⚒ → {grade}', sharpen_recipe_desc: 'Обряд перековки: поднимает {cat} до «{grade}» (на ступень выше). Выучи, собери материалы и заточи на верстаке.', sharpen_cat_weapon: 'оружие', sharpen_cat_armor: 'броню', repair_btn: '🛠 Починить', repair_pick: 'Что чиним:', repair_none: 'Нет вещей этого типа, которым нужна починка.', repair_broken: 'сломано', repair_ok: 'Починено — как новое.', repair_fail: 'Чинить нечего.', repair_tag: '🛠 набор', repair_recipe_desc: 'Ремонтный набор: восстанавливает прочность {cat}. Выучи, собери материалы и почини на верстаке.', craft_need: 'Не хватает: {list}', craft_none_known: 'Сначала изучи рецепт (вкладка «Рецепты»).', craft_known_h: 'Можно скрафтить:', craft_locked_h: 'Ещё не изучено:', r_locked_hint: 'Изучи во вкладке «Рецепты».', open_bench: '⚗️ Открыть верстак', bench_tabhint: 'Рецепты, ингредиенты и крафт открываются в отдельном верстаке.', recipes_side: 'Рецепты', ingredients_side: 'Ингредиенты', brew_hint: 'Выбери рецепт слева или Фристайл для эксперимента.', cb_perfect: 'Изысканно!', cb_good: 'Хорошо', cb_bad: 'Подгорело…', cb_closed: 'Круг замкнут — жми «Скрафтить»', cb_fill: 'Замкни круг ингредиентами', cb_cookhint: 'ОСТАНОВИ ПЛАМЯ В ЗОЛОТОЙ ЗОНЕ — жми СТОП или пробел', cb_stop: 'СТОП!', cb_needed: 'нужен для рецепта', cb_ingredient: 'ингредиент', craft_done: 'Скрафчено: {name}!', craft_run: 'Идёт работа...', craft_botched: 'Испортил — вышло «{name}».', q_sloppy: 'Слишком небрежно — без награды. Попробуй ещё.', craft_err: 'Не удалось — проверь URL / ключ / модель.', brokendrop_toast: 'В рюкзак попал сломанный «{name}» — кто-нибудь мог бы его починить.', brokendrop_qtitle: 'Починка: {name}', brokendrop_qdesc: 'Отнеси сломанный «{name}» к {vendor} на починку.', brokendrop_qreq: 'Починить «{name}» у {vendor}.', brokendrop_note: '*[{user} находит сломанный «{name}» — стоит отнести его на починку к {vendor} ({role}).]*', brokendrop_note_novendor: '*[{user} находит сломанный «{name}» — его нужно починить у мастера.]*',
+        craft_section: 'Скрафтить рецепт', craft_recipe_lbl: 'Изученный рецепт:', craft_btn: 'Скрафтить', sharpen_btn: '⚒ Заточить', sharpen_pick: 'Что точим:', sharpen_choose: '— выбери вещь —', sharpen_none: 'Нет надетой вещи нужного грейда для этого.', sharpen_noeq: 'Модуль экипировки недоступен.', sharpen_risky: '⚠ Заточка до Легендарного может провалиться (материалы сгорят).', sharpen_need_target: 'Сначала выбери, что точить.', sharpen_ok: 'Заточено! Теперь {grade}.', sharpen_fail: 'Заточка провалилась — материалы сгорели.', sharpen_tag: '⚒ → {grade}', sharpen_recipe_desc: 'Обряд перековки: поднимает {cat} до «{grade}» (на ступень выше). Выучи, собери материалы и заточи на верстаке.', sharpen_cat_weapon: 'оружие', sharpen_cat_armor: 'броню', repair_btn: '🛠 Починить', repair_pick: 'Что чиним:', repair_none: 'Нет вещей этого типа, которым нужна починка.', repair_broken: 'сломано', repair_ok: 'Починено — как новое.', repair_fail: 'Чинить нечего.', repair_tag: '🛠 набор', repair_recipe_desc: 'Ремонтный набор: восстанавливает прочность {cat}. Выучи, собери материалы и почини на верстаке.', craft_need: 'Не хватает: {list}', craft_none_known: 'Сначала изучи рецепт (вкладка «Рецепты»).', craft_known_h: 'Можно скрафтить:', craft_locked_h: 'Ещё не изучено:', r_locked_hint: 'Изучи во вкладке «Рецепты».', open_bench: '⚗️ Открыть верстак', bench_tabhint: 'Рецепты, ингредиенты и крафт открываются в отдельном верстаке.', recipes_side: 'Рецепты', ingredients_side: 'Ингредиенты', brew_hint: 'Выбери рецепт слева или Фристайл для эксперимента.', cb_perfect: 'Изысканно!', cb_good: 'Хорошо', cb_bad: 'Подгорело…', cb_closed: 'Круг замкнут — жми «Скрафтить»', cb_fill: 'Замкни круг ингредиентами', cb_cookhint: 'ОСТАНОВИ ПЛАМЯ В ЗОЛОТОЙ ЗОНЕ — жми СТОП или пробел', cb_stop: 'СТОП!', cb_needed: 'нужен для рецепта', cb_ingredient: 'ингредиент', craft_done: 'Скрафчено: {name}!', craft_run: 'Идёт работа...', craft_botched: 'Не вышло — получилось «{name}».', q_sloppy: 'Слишком небрежно — без награды. Попробуй ещё.', craft_err: 'Не удалось — проверь URL / ключ / модель.', brokendrop_toast: 'В рюкзак попал сломанный «{name}» — кто-нибудь мог бы его починить.', brokendrop_qtitle: 'Починка: {name}', brokendrop_qdesc: 'Отнеси сломанный «{name}» к {vendor} на починку.', brokendrop_qreq: 'Починить «{name}» у {vendor}.', brokendrop_note: '*[{user} находит сломанный «{name}» — стоит отнести его на починку к {vendor} ({role}).]*', brokendrop_note_novendor: '*[{user} находит сломанный «{name}» — его нужно починить у мастера.]*',
         free_section: 'Эксперимент (без рецепта)', free_hint: 'Выбери 2–4 материала и попытай удачу — результат неизвестен.', free_btn: 'Поэкспериментировать', free_pick: 'Выбери минимум 2 материала.', free_success: 'Успех! Получилось: {name}.', free_fail: 'Не вышло — {name}.', no_materials: 'В рюкзаке нет материалов.',
         mini_title: 'Твёрдая рука...', mini_hint: 'Жми, когда бегунок в светящейся зоне.', mini_tap: 'ЖМИ', mini_left: 'Осталось: {n}', mini_cancel: 'Отмена',
-        train_section: 'Тренировка', train_drill: '🥊 Тренировка за плату ({n})', train_spar: '⚔️ Засчитать сюжетный спарринг (бесплатно)', train_done: 'Хорошая сессия — +{xp} к «{skill}».', train_buff_eff: 'Отточенная форма после тренировки «{skill}».', train_paid: 'Тренировка ({n}) — +{xp} к «{skill}».', train_story: 'Из сюжета — +{xp} к «{skill}» (без оплаты).', train_perk: 'Обучен: {skill}', train_perk_eff: 'Перманентное мастерство «{skill}» (ур. {lvl}).', train_perk_got: 'Перманентная награда за «{skill}»!', train_note: 'Платные тренировки дают опыт и перманентный перк при повышении уровня. Сюжетный спарринг — только бесплатный опыт.', train_gen: '✨ Составить программу тренировок', train_regen: 'Новая программа', train_gen_run: 'Составляю программу...', train_gen_done: 'Программа готова!', train_empty: 'Программы тренировок ещё нет — составь, чтобы появились уроки.', train_note2: 'Практика запускает мини-игру. Полевое: отыграй в сюжете и нажми «Проверить» — тренер это заметит.', q_practice: '🥊 Практика', q_check: '✔️ Проверить', q_locked: 'Закрыто', q_lockedlv: 'Нужен уровень {lv}', q_done: 'Готово', q_kind: 'Тип:', q_kind_field: 'Полевое (отыгрыш)', q_kind_practice: 'Практика (мини-игра)', q_pass: 'Зачёт! {why}', q_notyet: 'Ещё не выполнено. {why}', q_checking: 'Читаю сцену...', q_no_scene: 'Нет свежей сцены для проверки.', q_reward_got: 'Награда: {list}', q_rew_buff: 'Бафф', q_rew_item: 'Предмет', cn_train_done: '*[{user} выполнил у {vendor} урок тренировки: «{title}» — {desc} ({skill}). Награда: {reward}.]*', cn_train_take: '*[{user} берётся за тренировку у {vendor}: «{title}» — {desc} ({skill}).]*', q_take: '🥋 Взять', q_taken: 'Задание взято — отыграй, потом заверши.', q_idid: '✔️ Я выполнила', q_active_hint: 'Взято — отыграй в сюжете, затем «Я выполнила» или «Проверить».', q_need_ai: 'Этот тренер требует ИИ-осмотр — нажми «Проверить».', q_decline: 'Отказаться', q_failed_note: 'Ты бросила урок — назначен новый, и это ударило по тебе.', train_main_sec: 'Основные уроки', train_drill_sec: 'Дриллы', train_can_advance: 'Оба основных урока пройдены — можно повысить уровень! Заверши их, чтобы подняться.', train_levelup: 'Навык «{skill}» вырос до уровня {lvl}! Открыты новые уроки.', train_fail_debuff: 'Осечка в «{skill}»', train_fail_debuff_eff: 'Пошатнувшаяся уверенность после сорванного урока', drill_regen: '🎲 Новые дриллы', drill_empty: 'Дриллов пока нет — сгенерируй.', drill_gen_run: 'Составляю дриллы...', drill_gen_done: 'Дриллы готовы!', drill_done: 'Дрилл выполнен — +{xp} XP.', drill_failed: 'Дрилл пропущен.', drill_skipped: 'пропущен', drill_dropped: 'Упражнение отброшено.',
+        train_section: 'Тренировка', train_drill: '🥊 Тренировка за плату ({n})', train_spar: '⚔️ Засчитать сюжетный спарринг (бесплатно)', train_done: 'Хорошая сессия — +{xp} к «{skill}».', train_buff_eff: 'Отточенная форма после тренировки «{skill}».', train_paid: 'Тренировка ({n}) — +{xp} к «{skill}».', train_story: 'Из сюжета — +{xp} к «{skill}» (без оплаты).', train_perk: 'Обучен: {skill}', train_perk_eff: 'Перманентное мастерство «{skill}» (ур. {lvl}).', train_perk_got: 'Перманентная награда за «{skill}»!', train_note: 'Платные тренировки дают опыт и перманентный перк при повышении уровня. Сюжетный спарринг — только бесплатный опыт.', train_gen: '✨ Составить программу тренировок', train_regen: 'Новая программа', train_gen_run: 'Составляю программу...', train_gen_done: 'Программа готова!', train_empty: 'Программы тренировок ещё нет — составь, чтобы появились уроки.', train_note2: 'Практика запускает мини-игру. Полевое: отыграй в сюжете и нажми «Проверить» — тренер это заметит.', q_practice: '🥊 Практика', q_check: '✔️ Проверить', q_locked: 'Закрыто', q_lockedlv: 'Нужен уровень {lv}', q_done: 'Готово', q_kind: 'Тип:', q_kind_field: 'Полевое (отыгрыш)', q_kind_practice: 'Практика (мини-игра)', q_pass: 'Зачёт! {why}', q_notyet: 'Ещё не выполнено. {why}', q_checking: 'Читаю сцену...', q_no_scene: 'Нет свежей сцены для проверки.', q_reward_got: 'Награда: {list}', q_rew_buff: 'Бафф', q_rew_item: 'Предмет', cn_train_done: '*[{user}: урок тренировки у {vendor} выполнен — «{title}» — {desc} ({skill}). Награда: {reward}.]*', cn_train_take: '*[{user} берётся за тренировку у {vendor}: «{title}» — {desc} ({skill}).]*', q_take: '🥋 Взять', q_taken: 'Задание взято — отыграй, потом заверши.', q_idid: '✔️ Выполнено', q_active_hint: 'Взято — отыграй в сюжете, затем «Выполнено» или «Проверить».', q_need_ai: 'Этот тренер требует ИИ-осмотр — нажми «Проверить».', q_decline: 'Отказаться', q_failed_note: 'Урок брошен — назначен новый, и это ударило по тебе.', train_main_sec: 'Основные уроки', train_drill_sec: 'Дриллы', train_can_advance: 'Оба основных урока пройдены — можно повысить уровень! Заверши их, чтобы подняться.', train_levelup: 'Навык «{skill}» вырос до уровня {lvl}! Открыты новые уроки.', train_fail_debuff: 'Осечка в «{skill}»', train_fail_debuff_eff: 'Пошатнувшаяся уверенность после сорванного урока', drill_regen: '🎲 Новые дриллы', drill_empty: 'Дриллов пока нет — сгенерируй.', drill_gen_run: 'Составляю дриллы...', drill_gen_done: 'Дриллы готовы!', drill_done: 'Дрилл выполнен — +{xp} XP.', drill_failed: 'Дрилл пропущен.', drill_skipped: 'пропущен', drill_dropped: 'Упражнение отброшено.',
         mini_r_title: 'Быстрые руки', mini_r_wait: 'Жди сигнала...', mini_r_go: 'ДАВАЙ — жми!', mini_r_early: 'Рано!', mini_round: 'Раунд {n}/{m}', mini_s_title: 'Повтори приём', mini_s_watch: 'Смотри последовательность...', mini_s_repeat: 'Теперь повтори!', mini_s_good: 'Верно!', mini_s_bad: 'Мимо!',
         btn_title: 'Вендоры и мастерские', panel_title: 'Вендоры и мастерские', subtitle: 'КАРТОТЕКА КОНТАКТОВ', cardfile_tab: 'КАРТОТЕКА', cardfile_tab_b: 'ВЕНДОРЫ', tab_profile: 'Профиль', tab_shop: 'Лавка', tab_jobs: 'Задания', tab_repair: 'Починка', open_dossier: 'Открыть досье', trade_lbl: 'РЕМЕСЛО:', close_lbl: 'Закрыть',
         type_blacksmith: 'Оружейник', type_tailor: 'Портной', type_apothecary: 'Аптекарь',
@@ -163,18 +232,18 @@ const I18N = {
         q_gen_err: 'Не удалось получить задания — проверь URL / ключ / модель.',
         q_accepted: 'Задание принято.', q_abandoned: 'Задание отброшено.', q_failed: 'Задание провалено.',
         q_done_item: 'Награда добавлена в рюкзак: {name}.',
-        q_done_repair: 'Награда: починил твоё ({gear}) (+{amount}%).',
+        q_done_repair: 'Награда: починено — {gear} (+{amount}%).',
         q_done_repair_none: 'Награда готова, но чинить сейчас нечего.',
         q_done_plain: 'Задание выполнено. Награда: {reward}.',
         q_need_inv: 'Модуль инвентаря выключен — награду некуда положить.',
         q_announced: 'Заметка о квесте добавлена в чат.',
-        set_autonote: 'Писать заметки о квестах/лавке в чат', set_reqai: 'Полевые уроки: требовать ИИ-осмотр (скрыть «Я выполнила»)',
+        set_autonote: 'Писать заметки о квестах/лавке в чат', set_reqai: 'Полевые уроки: требовать ИИ-осмотр (скрыть «Выполнено»)',
         set_cardinject: 'Вставлять знания вендора (товар и активные квесты)',
         set_questglobal: 'Квесты видны всей сцене (выкл = знает только карта вендора)',
         set_needpresence: 'Брать квесты только когда ты у вендора (по сюжету)',
-        not_present: 'Ты сейчас не у «{vendor}» — пусть сначала сюжет приведёт тебя к нему.', im_here: 'Я сейчас у этого вендора (по сюжету)',
+        not_present: 'Ты сейчас не у «{vendor}» — пусть сначала сюжет приведёт тебя туда.', im_here: 'Я сейчас у этого вендора (по сюжету)',
         cn_accept: '*[{user} берёт у {vendor} ({role}) задание: «{title}». Нужно: {req}. Награда: {reward}.]*',
-        cn_done: '*[{user} выполнил «{title}» для {vendor} ({role}). Награда: {reward}.]*',
+        cn_done: '*[{user}: задание «{title}» для {vendor} ({role}) выполнено. Награда: {reward}.]*',
         cn_repair: '*[{user} отдаёт {vendor} починить ({gear}) с помощью «{item}».]*',
         inject_quest: 'Активный квест — «{vendor}» это NPC ({role}), который дал {{user}} задание: «{title}». Нужно: {req}. Награда за выполнение: {reward}. «{vendor}» в курсе этой договорённости; остальные присутствующие знают о ней, только если {{user}} расскажет',
         repair_title: 'Починка снаряжения', gear_label: 'Повреждённое:', item_label: 'Предложить предмет:', in_backpack: 'В рюкзаке',
@@ -186,21 +255,21 @@ const I18N = {
         pick_both: 'Выбери предмет снаряжения и предмет из рюкзака.',
         active_here: 'Ты здесь', set_active: 'Войти в мастерскую',
         toast_validating: 'Вендор осматривает предмет...',
-        toast_repaired: '{vendor}: починил твоё ({gear}) (+{amt}%). {reason}', mat_used_up: '«{item}» израсходован.', mat_left: '«{item}»: осталось {n}%.',
+        toast_repaired: '{vendor}: починено — {gear} (+{amt}%). {reason}', mat_used_up: '«{item}» израсходован.', mat_left: '«{item}»: осталось {n}%.',
         toast_rejected: '{vendor}: {reason}',
         toast_repair_err: 'Не удалось связаться с вендором — проверь URL / ключ / модель.',
         toast_vendor_saved: 'Вендор сохранён.', toast_vendor_deleted: 'Вендор удалён.',
-        toast_vnd_restored: 'Поставщики восстановлены из резервной копии чата!',
-        carry_lbl: 'Перенести поставщиков из другого чата:',
+        toast_vnd_restored: 'Вендоры восстановлены из резервной копии чата!',
+        carry_lbl: 'Перенести вендоров из другого чата:',
         carry_btn: 'Перенести',
-        carry_done: 'Перенесено поставщиков: {n}.',
-        carry_err: 'В том чате больше нет поставщиков.',
-        carry_opt: '{id} — поставщиков: {n}',
+        carry_done: 'Перенесено вендоров: {n}.',
+        carry_err: 'В том чате больше нет вендоров.',
+        carry_opt: '{id} — вендоров: {n}',
         toast_gen: 'Призываю подходящего вендора из лора...', toast_gen_done: 'Вендор создан!',
         toast_gen_err: 'Не удалось сгенерировать вендора — проверь URL / ключ / модель.',
         toast_need_name: 'Введите имя вендора.',
         inject_at: '{{user}} находится у «{name}» ({type}). Этот вендор знает своё ремесло и видит снаряжение, которое {{user}} принёс на починку',
-        inject_card_head: 'Ты — {vendor}, {role}. Ты знаешь своё дело:', inject_goods: 'сейчас у тебя в продаже: {goods}.', inject_myquests: 'задания, которые ты дал {{user}}: {list}.',
+        inject_card_head: 'Ты — {vendor}, {role}. Ты знаешь своё дело:', inject_goods: 'сейчас у тебя в продаже: {goods}.', inject_myquests: 'твои задания для {{user}}: {list}.',
         set_title: 'RPG Vendors & Workshops', set_enable: 'Включить вендоров',
         set_api: 'Настройки API', set_depth: 'Глубина вставки в контекст:', set_inchat: 'Вставлять в чат', set_depth_off: 'Работает с «Вставлять в чат»',
         set_lang: 'Язык:', set_url: 'URL', set_key: 'API-ключ', set_model: 'Модель'
@@ -535,9 +604,7 @@ async function callAI(systemPrompt, userPrompt, tempOverride) {
             if (res.status === 429 && i === 0) { await new Promise(r => setTimeout(r, 2000)); continue; }
             if (!res.ok) throw new Error(`HTTP ${res.status}`);
             const data = await res.json();
-            const content = data.choices[0].message.content.trim();
-            const m = content.match(/\{[\s\S]*\}/);
-            return JSON.parse(m ? m[0] : content);
+            return looseJson(modelAnswerText(data));
         } catch (e) { if (i === 1) throw e; }
     }
 }
@@ -638,8 +705,10 @@ function saveVendor(v) {
 }
 function deleteVendor(id) {
     state.vendors = state.vendors.filter(v => v.id !== id);
+    state.quests = (state.quests || []).filter(q => q.vendorId !== id);   // its jobs go with it, or they hang in the prompt under "?"
     if (state.activeVendorId === id) state.activeVendorId = null;
-    saveState(); buildInjection(); toastr.info(t('toast_vendor_deleted'));
+    if (state.presentVendorId === id) state.presentVendorId = null;
+    saveState(); buildInjection(); buildCardInjection(); restoreVendorButtons(); toastr.info(t('toast_vendor_deleted'));
 }
 async function autoGenerateVendor(forcedType) {
     const forced = (forcedType && forcedType !== 'auto' && VENDOR_TYPES.includes(forcedType) && forcedType !== 'other') ? forcedType : '';
@@ -660,7 +729,7 @@ Output strictly JSON: {"type":"blacksmith","name":"","desc":""}`;
         const res = await callAI(sys, settingContext());
         if (!ownsChat(myChat)) return;   // chat changed during the request
         const type = forced || (VENDOR_TYPES.includes(res.type) ? res.type : 'other');
-        const v = { id: genId(), type: type, name: String(res.name || 'Vendor'), desc: String(res.desc || ''), charName: '' };
+        const v = { id: genId(), type: type, name: String(res.name || t('fb_vendor')), desc: String(res.desc || ''), charName: '' };
         state.vendors.push(v); saveState();
         toastr.success(t('toast_gen_done'));
         // Not reset here on purpose: the window is already open, so this is a change
@@ -768,7 +837,7 @@ Respond strictly JSON: {"logical": true/false, "amount": <integer 0-100, percent
         if (!ownsChat(myChat)) return;   // chat changed: the bridge calls below would hit the NEW
                                          // chat's inventory/equipment and drop a note into its chat
         if (res.logical) {
-            const amt = Math.max(1, Math.min(100, parseInt(res.amount) || 25));
+            const amt = Math.max(1, Math.min(100, withBonus(Math.max(1, Math.min(100, parseInt(res.amount) || 25)), 'repair')));
             if (isInv) inv.repair(targetId, amt); else eq.repair(gear.slot, amt);
             // wear the offered material down rather than vanishing it in one use; delete only at 0
             let tail = '';
@@ -820,7 +889,7 @@ Output strictly JSON: {"quests":[{"type":"fetch","title":"","desc":"","requireme
             state.quests.push({
                 id: genId(), vendorId: vendor.id, type: q.type || 'fetch',
                 title, desc: String(q.desc || ''), requirement,
-                reward: { kind: rk, name: aiName(q.reward && q.reward.name, 'Material', 50), effect: String(q.reward && q.reward.effect || ''), amount: parseInt(q.reward && q.reward.amount) || 25 },
+                reward: { kind: rk, name: aiName(q.reward && q.reward.name, t('fb_material'), 50), effect: String(q.reward && q.reward.effect || ''), amount: questAmount(rk, parseInt(q.reward && q.reward.amount) || 25) },
                 status: 'available'
             });
             added++;
@@ -875,8 +944,15 @@ function completeQuest(id) {
     const q = findQuest(id); if (!q) return;
     if (q.reward && q.reward.kind === 'item') {
         const inv = invApi();
-        if (inv) { inv.add({ name: q.reward.name || 'Reward', desc: '' }); toastr.success(t('q_done_item', { name: escapeHtml(q.reward.name) })); }
+        if (inv) { inv.add({ name: q.reward.name || t('fb_reward'), desc: '' }); toastr.success(t('q_done_item', { name: escapeHtml(q.reward.name) })); }
         else toastr.warning(t('q_need_inv'));
+    } else if (q.reward && q.reward.kind === 'repair' && q.type === 'repair' && invApi()
+        && invApi().list().some(i => i.name === q.reward.name && (i.broken || (typeof i.dur === 'number' && i.dur < (i.max || 100))))) {
+        // the job was to mend that very thing from the backpack: mend it, not whatever is worn
+        const inv = invApi();
+        const it = inv.list().find(i => i.name === q.reward.name && (i.broken || (typeof i.dur === 'number' && i.dur < (i.max || 100))));
+        const amt = Math.max(1, Math.min(100, parseInt(q.reward.amount) || 25));
+        inv.repair(it.id, amt); toastr.success(t('q_done_repair', { gear: escapeHtml(it.name), amount: amt }));
     } else if (q.reward && q.reward.kind === 'repair') {
         const eq = eqApi(); const slot = mostDamagedSlot();
         if (eq && slot) {
@@ -886,7 +962,8 @@ function completeQuest(id) {
         } else toastr.info(t('q_done_repair_none'));
     } else if (q.reward && q.reward.kind === 'coins') {
         const inv = invApi();
-        if (inv) { inv.addCoins(q.reward.amount || 0); toastr.success(t('q_done_coins', { n: q.reward.amount || 0 })); }
+        const coins = questAmount('coins', q.reward.amount || 0);
+        if (inv) { inv.addCoins(coins); toastr.success(t('q_done_coins', { n: coins })); }
         else toastr.warning(t('q_need_inv'));
     } else if (q.reward && q.reward.kind === 'buff') {
         const vit = vitApi();
@@ -901,9 +978,61 @@ function completeQuest(id) {
         insertChatNote(t('cn_done', { user: getContext().name1 || 'I', vendor: v ? v.name : '?', role: v ? vendorRole(v).toLowerCase() : 'vendor', title: q.title, reward: rewardText(q.reward) }));
     }
 }
-function sellValue(it) { return Math.max(1, Math.round((it.chance || 30) / 10)); }
+// a quest pays coins up to 150: one generous answer of the model does not empty the shops' meaning (goods cost 1–100)
+const QUEST_COINS_MAX = 150;
+function questAmount(kind, n) { n = Math.round(Number(n) || 0); return kind === 'coins' ? Math.max(0, Math.min(QUEST_COINS_MAX, n)) : n; }
+// what one bought good may heal or fill: the same scale as crafted ones (recipes stop at 80 / 60), a shop good a step below
+const SHOP_HEAL_MAX = 60, SHOP_FOOD_MAX = 40;
+/* ---- CRAFT PASSIVES ----
+   A craft learned at a vendor is the player's own: its level (the best one per trade)
+   gives a small lasting bonus, capped so a master merchant does not break the shops. */
+const CRAFT_PASSIVE = {
+    blacksmith: { kind: 'repair', per: 5 }, tailor: { kind: 'repair', per: 5 },
+    cook: { kind: 'food', per: 8 }, apothecary: { kind: 'heal', per: 8 },
+    merchant: { kind: 'price', per: 4 }, jeweler: { kind: 'sell', per: 10 }
+};
+const CRAFT_CAP = { repair: 30, food: 32, heal: 32, price: 16, sell: 40 };
+function craftList() {
+    if (!state || !Array.isArray(state.vendors)) return [];
+    const best = {};
+    state.vendors.forEach(v => {
+        if (!v || !v.skill || typeof v.skill.level !== 'number' || v.type === 'other') return;
+        const k = v.type;
+        if (!best[k] || v.skill.level > best[k].level) best[k] = { type: k, skill: String(v.skill.name || defaultSkillName(v)), level: v.skill.level, max: MAX_SKILL_LEVEL };
+    });
+    return Object.values(best).map(c => {
+        const p = CRAFT_PASSIVE[c.type];
+        const pct = p ? Math.min(CRAFT_CAP[p.kind], p.per * Math.max(0, c.level - 1)) : 0;
+        const text = c.type === 'trainer' ? t('cr_train') : (p ? (pct ? t('cr_' + p.kind, { n: pct }) : t('cr_none')) : '');
+        return { ...c, kind: p ? p.kind : (c.type === 'trainer' ? 'train' : ''), pct, text };
+    });
+}
+// the bonus of one kind, in percent, across all crafts (two repairing trades add up, to the cap)
+function craftBonus(kind) {
+    const sum = craftList().filter(c => c.kind === kind).reduce((a, c) => a + c.pct, 0);
+    return Math.min(CRAFT_CAP[kind] || 0, sum);
+}
+function withBonus(n, kind) { return Math.round((Number(n) || 0) * (1 + craftBonus(kind) / 100)); }
+function shopPrice(g) { const d = craftBonus('price'); return Math.max(1, Math.round((Number(g.price) || 1) * (1 - d / 100))); }
+/* ---- POINTS FOR THE TREE ----
+   Mastery feeds the fight: a craft at levels 3 and 5, a trainer at each new level, give
+   one skill point to the tree of RPG Vitals — at most 2 from a craft, 4 from a trainer,
+   counted on the vendor so a point is never given twice. */
+function grantTreePoint(v) {
+    const vit = vitApi(); if (!vit || typeof vit.addSkillPoints !== 'function') return;
+    const cap = v.type === 'trainer' ? 4 : 2;
+    v.ptsGiven = Number(v.ptsGiven) || 0;
+    if (v.ptsGiven >= cap) return;
+    let ok = 0; try { ok = vit.addSkillPoints(1); } catch (e) { ok = 0; }
+    if (!ok) return;   // no tree in this chat: nothing given, nothing counted
+    v.ptsGiven++;
+    toastr.success(t('pts_got', { skill: escapeHtml(v.skill.name), lvl: v.skill.level }));
+}
+function sellValue(it) { return withBonus(Math.max(1, Math.round((it.chance || 30) / 10)), 'sell'); }
 async function generateShop(vendor) {
     if (!settings.enabled) return;
+    const wait = shopWait(vendor);
+    if (wait > 0) { toastr.info(t('restock_wait', { n: wait })); return; }   // no request at all: the shelf is what it is until then
     toastr.info(t('shop_gen'));
     const myChat = currentChatId;
     // remember everything this vendor has stocked before, so re-rolls don't repeat themselves
@@ -925,21 +1054,33 @@ Output strictly JSON: {"goods":[{"name":"","type":"misc","desc":"","price":10,"w
         const res = await callAI(sys, settingContext(), temp);
         if (!ownsChat(myChat)) return;   // chat changed during the restock
         let goods = Array.isArray(res.goods) ? res.goods : [];
-        goods = goods.filter(g => { if (!g) return false; const n = aiName(g.name); if (!n) return false; g.name = n; return true; });
-        vendor.stock = goods.slice(0, 8).map(g => ({ id: genId(), name: String(g.name || 'Item'), type: String(g.type || 'misc'), desc: String(g.desc || ''), price: Math.max(1, parseInt(g.price) || 10), weight: (typeof g.weight === 'number' && g.weight > 0) ? g.weight : undefined, heal: (typeof g.heal === 'number' && g.heal > 0) ? g.heal : undefined, food: (typeof g.food === 'number' && g.food > 0) ? g.food : undefined, buff: (g.buff && g.buff.name) ? { name: String(g.buff.name), effect: String(g.buff.effect || ''), duration: (typeof g.buff.duration === 'number' && g.buff.duration > 0) ? g.buff.duration : null } : undefined }));
+        const seenNow = new Set();   // one good once: a model repeating itself within one answer filled the shelf with twins
+        goods = goods.filter(g => { if (!g) return false; const n = aiName(g.name); if (!n) return false; const k = n.trim().toLowerCase(); if (seenNow.has(k)) return false; seenNow.add(k); g.name = n; return true; });
+        vendor.stock = goods.slice(0, 8).map(g => ({ id: genId(), name: String(g.name || t('fb_item')), type: String(g.type || 'misc'), desc: String(g.desc || ''), price: Math.max(1, parseInt(g.price) || 10), weight: (typeof g.weight === 'number' && g.weight > 0) ? g.weight : undefined, heal: (typeof g.heal === 'number' && g.heal > 0) ? Math.min(SHOP_HEAL_MAX, Math.round(g.heal)) : undefined, food: (typeof g.food === 'number' && g.food > 0) ? Math.min(SHOP_FOOD_MAX, Math.round(g.food)) : undefined, buff: (g.buff && g.buff.name) ? { name: String(g.buff.name), effect: String(g.buff.effect || ''), duration: (typeof g.buff.duration === 'number' && g.buff.duration > 0) ? g.buff.duration : null } : undefined }));
         // fold the fresh names into memory too
         vendor.stock.forEach(s => { const n = String(s.name || '').trim(); if (n && !vendor.seenGoods.some(x => x.toLowerCase() === n.toLowerCase())) vendor.seenGoods.push(n); });
         if (vendor.seenGoods.length > 60) vendor.seenGoods = vendor.seenGoods.slice(-60);
+        vendor.stock.forEach(g => { g.qty = stockQty(g.price); });          // counted always, shown and enforced only with the setting on
+        vendor.restockAt = (getContext().chat || []).length;
         saveState(); refreshPanel(); toastr.success(t('shop_gen_done'));
     } catch (e) { toastr.error(t('shop_gen_err')); }
 }
+function shopWait(vendor) {
+    if (!settings.shopLimited || typeof vendor.restockAt !== 'number') return 0;
+    const n = ((getContext().chat || []).length) - vendor.restockAt;
+    return Math.max(0, Math.max(1, parseInt(settings.shopEvery) || 20) - n);
+}
+// a few of each: cheap things by the handful, dear ones one at a time
+function stockQty(price) { const p = Number(price) || 10; return p >= 60 ? 1 : p >= 25 ? 1 + Math.floor(Math.random() * 2) : 2 + Math.floor(Math.random() * 3); }
 function buyGood(vendor, goodId) {
     const inv = invApi();
     if (!inv) { toastr.warning(t('no_inv_shop')); return; }
     const good = (vendor.stock || []).find(g => g.id === goodId);
     if (!good) return;
-    if (!inv.spendCoins(good.price)) { toastr.warning(t('not_enough')); return; }
+    if (settings.shopLimited && typeof good.qty === 'number' && good.qty <= 0) { toastr.info(t('sold_out')); return; }
+    if (!inv.spendCoins(shopPrice(good))) { toastr.warning(t('not_enough')); return; }
     inv.add({ name: good.name, desc: good.desc, type: good.type, weight: good.weight, heal: good.heal, food: good.food, buff: good.buff });
+    if (settings.shopLimited && typeof good.qty === 'number') { good.qty--; saveState(); }
     toastr.success(t('bought', { name: escapeHtml(good.name) }));
     refreshTab();
 }
@@ -994,6 +1135,7 @@ function addSkillXp(v, n) {
     while (v.skill.xp >= SKILL_XP && v.skill.level < MAX_SKILL_LEVEL) {
         v.skill.xp -= SKILL_XP; v.skill.level++;
         toastr.info(t('skill_up', { skill: escapeHtml(v.skill.name), lvl: v.skill.level }));
+        if (v.type !== 'trainer' && (v.skill.level === 3 || v.skill.level === 5)) grantTreePoint(v);
     }
     if (v.skill.level >= MAX_SKILL_LEVEL) v.skill.xp = Math.min(v.skill.xp, SKILL_XP);
 }
@@ -1065,7 +1207,7 @@ Output strictly JSON: {"kits":[{"tier":1,"name":"","ingredients":["",""]}]}`;
                 const tier = Math.max(1, Math.min(2, parseInt(k.tier) || 1));
                 const ings = Array.isArray(k.ingredients) ? k.ingredients.map(String).filter(Boolean).slice(0, 4) : [];
                 if (!ings.length) return;
-                v.recipes.push({ id: genId(), kind: 'repair', category: cat, tier, stars: tier + 1, name: String(k.name || 'Repair kit').slice(0, 60), ingredients: ings, result: '', price: tier === 2 ? 60 : 20, learned: false });
+                v.recipes.push({ id: genId(), kind: 'repair', category: cat, tier, stars: tier + 1, name: String(k.name || t('fb_kit')).slice(0, 60), ingredients: ings, result: '', price: tier === 2 ? 60 : 20, learned: false });
             });
         } catch (e2) { console.error('Repair recipe gen error:', e2); }
     } catch (e) { console.error('Sharpen recipe gen error:', e); }
@@ -1092,16 +1234,17 @@ function craftQMul(q) { if (typeof q === 'number') return 0.6 + Math.max(0, Math
 // Edibles get satiety/heal and a buff that fires WHEN EATEN; gear carries a buff applied WHEN WORN.
 function buildCraftedItem(v, r, q) {
     const type = craftItemType(v); const eff = r.effect || {}; const m = craftQMul(q);
+    const fb = 1 + craftBonus('food') / 100, hb = 1 + craftBonus(type === 'consumable' ? 'heal' : 'food') / 100;   // the cook's and the apothecary's hand
     const mkBuff = b => (b && b.name) ? { name: b.name, effect: b.effect || '', kind: 'buff', duration: b.duration ? Math.max(1, Math.round(b.duration * m)) : null } : undefined;
     const item = { name: r.name, desc: r.result || '', type };
     if (type === 'food') {
-        item.food = Math.max(5, Math.round((eff.food || (8 + r.stars * 5)) * Math.min(1.3, m)));
-        if (eff.heal) item.heal = Math.round(eff.heal * m);
+        item.food = Math.max(5, Math.round((eff.food || (8 + r.stars * 5)) * Math.min(1.3, m) * fb));
+        if (eff.heal) item.heal = Math.round(eff.heal * m * hb);
         if (eff.buff) item.buff = mkBuff(eff.buff);
     } else if (type === 'consumable') {
-        if (eff.heal) item.heal = Math.round(eff.heal * m);
+        if (eff.heal) item.heal = Math.round(eff.heal * m * hb);
         if (eff.buff) item.buff = mkBuff(eff.buff);
-        if (!item.heal && !item.buff) item.heal = 10 + r.stars * 4; // a potion should at least heal
+        if (!item.heal && !item.buff) item.heal = Math.round((10 + r.stars * 4) * hb); // a potion should at least heal
     } else {
         // weapon / armour / clothing / accessory / misc — the buff applies once the piece is equipped
         if (eff.buff) item.buff = mkBuff(eff.buff);
@@ -1124,12 +1267,12 @@ Strictly ${genLang()}. Output JSON: {"name":"","type":"food","debuff":{"name":""
         const type = types.includes(res.type) ? res.type : (types.includes(typeHint) ? typeHint : 'misc');
         const db = res.debuff || {};
         const worn = (type === 'weapon' || type === 'armor' || type === 'clothing');
-        const item = { name: aiName(res.name, 'Botched item', 60), desc: String(db.effect || '').slice(0, 120), type };
+        const item = { name: aiName(res.name, t('fb_botched'), 60), desc: String(db.effect || '').slice(0, 120), type };
         if (db.name) item.buff = { name: String(db.name).slice(0, 40), effect: String(db.effect || '').slice(0, 90), kind: 'debuff', duration: worn ? null : Math.max(1, parseInt(db.duration) || 3) };
         if (type === 'food') item.food = 3; // bad food barely fills
         inv.add(item);
         return item.name;
-    } catch (e) { console.error('botched item', e); if (!ownsChat(myChat)) return null; inv.add({ name: baseName ? (baseName + ' (botched)') : 'Botched item', desc: '', type: typeHint || 'misc' }); return null; }
+    } catch (e) { console.error('botched item', e); if (!ownsChat(myChat)) return null; inv.add({ name: baseName ? t('fb_botched_of', { name: baseName }) : t('fb_botched'), desc: '', type: typeHint || 'misc' }); return null; }
 }
 function skillHeaderHtml(v) {
     ensureSkill(v); const sk = v.skill;
@@ -1398,7 +1541,7 @@ function craftRecipe(v, id) {
 async function freestyleResolve(v, items, q, onDone) {
     const inv = invApi();
     const myChat = currentChatId;   // the remove/add below must act on THIS chat's backpack
-    const base = [10, 30, 50, 70, 90][Math.max(0, Math.min(4, v.skill.level - 1))];
+    const base = [25, 40, 55, 70, 85][Math.max(0, Math.min(4, v.skill.level - 1))];   // a novice's experiment was 1 in 10; now 1 in 4, a master's as before
     const qb = (typeof q === 'number') ? Math.round(q * 8) : (q === 'perfect' ? 8 : q === 'bad' ? -12 : 0);
     const rngSuccess = Math.random() * 100 < Math.max(3, Math.min(90, base + qb));
     toastr.info(t('craft_run'));
@@ -1421,7 +1564,7 @@ Strictly ${genLang()}. Output JSON: {"fits":true,"name":"","type":"consumable","
         const type = types.includes(res.type) ? res.type : (success ? 'consumable' : 'misc');
         const worn = (type === 'weapon' || type === 'armor' || type === 'clothing');
         const eff = res.effect || {};
-        const item = { name: String(res.name || (success ? 'Concoction' : 'Botched mix')).slice(0, 60), desc: String(eff.effect || '').slice(0, 120), type };
+        const item = { name: String(res.name || (success ? t('fb_concoction') : t('fb_botched_mix'))).slice(0, 60), desc: String(eff.effect || '').slice(0, 120), type };
         if (eff.name) item.buff = { name: String(eff.name).slice(0, 40), effect: String(eff.effect || '').slice(0, 90), kind: success ? 'buff' : 'debuff', duration: worn ? null : Math.max(1, parseInt(eff.duration) || 3) };
         if (type === 'food') item.food = success ? (8 + Math.floor(Math.random() * 10)) : 3;
         if (inv) inv.add(item);
@@ -1441,13 +1584,17 @@ function freestyleCraft(v, ids) {
 }
 
 // ---- Training (physical trainers) ----
+const TRAIN_HP_MAX = 40;   // max health all trainers of one chat can add, together (one trainer's full course gives 44)
 function trainCost(v) { ensureSkill(v); return 10 + v.skill.level * 10; }
 // on levelling up under a trainer, grant a PERMANENT reward: a sticky buff (never fades) + a small max-HP bump
 function grantTrainingReward(v, beforeLevel) {
     const vit = vitApi(); if (!vit || v.skill.level <= beforeLevel) return;
     vit.addBuff({ name: t('train_perk', { skill: v.skill.name }), effect: t('train_perk_eff', { skill: v.skill.name, lvl: v.skill.level }), kind: 'buff', duration: null, tag: 'train:' + v.id + ':' + v.skill.level });
     const hp = (typeof vit.getHp === 'function') ? vit.getHp() : null;
-    if (hp && typeof vit.setHp === 'function') { const bump = 4 + v.skill.level * 2; vit.setHp(hp.hp + bump, hp.max + bump); }
+    // the max-HP bump is shared by every trainer of the chat and stops at TRAIN_HP_MAX:
+    // trainer after trainer used to raise it without end; the perk itself still comes
+    const room = Math.max(0, TRAIN_HP_MAX - (Number(state.trainHp) || 0));
+    if (hp && typeof vit.setHp === 'function' && room > 0) { const bump = Math.min(room, 4 + v.skill.level * 2); state.trainHp = (Number(state.trainHp) || 0) + bump; vit.setHp(hp.hp + bump, hp.max + bump); saveState(); }
     toastr.success(t('train_perk_got', { skill: escapeHtml(v.skill.name) }));
 }
 // FREE, story-driven: log a sparring win from the RP. Raises the level WITHOUT paying (no special reward).
@@ -1520,7 +1667,7 @@ async function failMain(v, q) {
 Output strictly JSON: {"title":"","desc":"","type":"field","reward":{"kind":"xp","xp":15}}`;
         const res = await callAI(sys, settingContext(), Math.min(1.05, (typeof settings.temperature === 'number' ? settings.temperature : 0.7) + 0.15));
         if (!ownsChat(myChat)) return;   // chat changed while inventing the replacement
-        v.training.push({ id: genId(), title: String(res.title || 'Lesson').slice(0, 60), desc: String(res.desc || '').slice(0, 200), type: res.type === 'field' ? 'field' : 'practice', minLevel: lvl, grad: false, main: true, reward: parseQuestReward(res.reward), done: false });
+        v.training.push({ id: genId(), title: String(res.title || t('fb_lesson')).slice(0, 60), desc: String(res.desc || '').slice(0, 200), type: res.type === 'field' ? 'field' : 'practice', minLevel: lvl, grad: false, main: true, reward: parseQuestReward(res.reward), done: false });
     } catch (e) { if (!ownsChat(myChat)) return; v.training.push({ id: genId(), title: t('q_practice'), desc: '', type: 'practice', minLevel: lvl, grad: false, main: true, reward: { kind: 'xp', xp: 15 }, done: false }); }
     v.training.sort((a, b) => (a.minLevel - b.minLevel) || (a.grad ? 1 : -1));
     saveState(); afterCraftChange();
@@ -1605,6 +1752,7 @@ function advanceTrainerLevel(v) {
     const before = v.skill.level;
     v.skill.level++; v.skill.xp = 0;
     grantTrainingReward(v, before); // permanent perk + max-HP bump on level-up
+    grantTreePoint(v);              // and a point for the fighting tree
     v.drills = []; // old drills close; fresh ones for the new level
     toastr.success(t('train_levelup', { skill: escapeHtml(v.skill.name), lvl: v.skill.level }));
     saveState();
@@ -1627,7 +1775,7 @@ Output strictly JSON: {"quests":[{"title":"","desc":"","type":"practice","minLev
         const res = await callAI(sys, settingContext());
         if (!ownsChat(myChat)) return;   // chat changed during the request
         const qs = Array.isArray(res.quests) ? res.quests : [];
-        v.training = qs.slice(0, 12).map(q => ({ id: genId(), title: String(q.title || 'Lesson').slice(0, 60), desc: String(q.desc || '').slice(0, 200), type: q.type === 'field' ? 'field' : 'practice', minLevel: Math.max(1, Math.min(5, parseInt(q.minLevel) || 1)), grad: !!q.grad, main: true, reward: parseQuestReward(q.reward), done: false }));
+        v.training = qs.slice(0, 12).map(q => ({ id: genId(), title: String(q.title || t('fb_lesson')).slice(0, 60), desc: String(q.desc || '').slice(0, 200), type: q.type === 'field' ? 'field' : 'practice', minLevel: Math.max(1, Math.min(5, parseInt(q.minLevel) || 1)), grad: !!q.grad, main: true, reward: parseQuestReward(q.reward), done: false }));
         if (v.training.length && !v.training.some(q => q.grad)) { const g = v.training.slice().sort((a, b) => b.minLevel - a.minLevel)[0]; if (g) { g.grad = true; g.minLevel = 5; } }
         v.training.sort((a, b) => (a.minLevel - b.minLevel) || (a.grad ? 1 : -1));
         v.drills = [];
@@ -1649,7 +1797,7 @@ Output strictly JSON: {"drills":[{"title":"","desc":"","type":"field"}]}`;
         const res = await callAI(sys, settingContext(), Math.min(1.1, (typeof settings.temperature === 'number' ? settings.temperature : 0.7) + 0.15));
         if (!ownsChat(myChat)) return;   // chat changed during the request
         const ds = Array.isArray(res.drills) ? res.drills : [];
-        v.drills = ds.slice(0, 3).map(d => ({ id: genId(), title: String(d.title || 'Drill').slice(0, 60), desc: String(d.desc || '').slice(0, 160), type: d.type === 'practice' ? 'practice' : 'field', minLevel: v.skill.level, drill: true, reward: { kind: 'xp', xp: 10 + Math.floor(Math.random() * 8) }, done: false }));
+        v.drills = ds.slice(0, 3).map(d => ({ id: genId(), title: String(d.title || t('fb_drill')).slice(0, 60), desc: String(d.desc || '').slice(0, 160), type: d.type === 'practice' ? 'practice' : 'field', minLevel: v.skill.level, drill: true, reward: { kind: 'xp', xp: 10 + Math.floor(Math.random() * 8) }, done: false }));
         saveState(); afterCraftChange(); toastr.success(t('drill_gen_done'));
     } catch (e) { console.error('Drill gen error:', e); toastr.error(t('craft_err')); }
 }
@@ -1857,7 +2005,7 @@ function cbRenderInv(v) {
     else if (!rows.length) patchHtml(box, `<div class="cb-empty">${escapeHtml(t('no_materials'))}</div>`);
     else patchHtml(box, rows.map(a => {
         const c = a.free.length; const isNeed = needSet.has(ingKey(a.name)) && benchSlots.some(s => !s.itemId && s.need && sameIng(s.need, a.name));
-        return `<div class="ing ${c <= 0 ? 'empty' : ''} ${isNeed && c > 0 ? 'match' : ''}" draggable="${c > 0 ? 'true' : 'false'}" data-id="${a.free[0] || a.ids[0]}"><div class="vial">${cbIcon(ingIconKey(a.name))}</div><div class="info"><div class="in">${escapeHtml(a.name)}</div><div class="ic">${escapeHtml(isNeed ? t('cb_needed') : (a.desc || t('cb_ingredient')))}</div></div><span class="cnt">×${c}</span></div>`;
+        return `<div class="ing ${c <= 0 ? 'empty' : ''} ${isNeed && c > 0 ? 'match' : ''}" draggable="${c > 0 ? 'true' : 'false'}" data-id="${escapeHtml(a.free[0] || a.ids[0])}"><div class="vial">${cbIcon(ingIconKey(a.name))}</div><div class="info"><div class="in">${escapeHtml(a.name)}</div><div class="ic">${escapeHtml(isNeed ? t('cb_needed') : (a.desc || t('cb_ingredient')))}</div></div><span class="cnt">×${c}</span></div>`;
     }).join(''));
     // active foraging hunt — what to look for and where; the loupe turns these up while you search
     const fl = cbEl('vc-forage-list');
@@ -1915,20 +2063,44 @@ function craftGo(v) {
     startCook(v);
 }
 
+function cbCancelCook() {
+    if (!cbCook && !benchBusy) return;
+    if (cbCook) cancelAnimationFrame(cbCook.raf);
+    if (cbKeyH) window.removeEventListener('keydown', cbKeyH);
+    cbCook = null; benchBusy = false;
+    const circle = cbEl('cb-circle'); if (circle) circle.classList.remove('heat');
+}
+// closing the window mid-flame left the bench busy for good and the flame listening to Space
+function vndClose() {
+    const cooking = !!cbCook;
+    cbCancelCook();
+    $('#rpg-vnd-modal').removeClass('visible');
+    if (cooking) { const v = state && state.vendors.find(x => x.id === cbVendorId); if (v && document.getElementById('vc-bench')) cbRenderAll(v); }
+}
 function startCook(v) {
     benchBusy = true;
     const box = cbEl('vc-bench'); const circle = cbEl('cb-circle'); if (circle) circle.classList.add('heat');
     const lbl = box ? box.querySelector('.rlabel') : null;
-    const zoneW = 19, zoneX = 20 + Math.random() * 56;
+    /* The flame used to be the same for a novice and a master: a 19% gold zone, the same
+       speed, and botched more often than not. The vendor's skill now steadies the hand:
+       a wider zone, a wider "good" margin and a slower flame at every level. */
+    ensureSkill(v);
+    const lv = Math.max(1, Math.min(MAX_SKILL_LEVEL, v.skill.level || 1));
+    const zoneW = 22 + lv * 3, zoneX = 6 + Math.random() * (88 - zoneW);   // 25% at level 1 … 37% at level 5
     if (lbl) lbl.outerHTML = `<div class="cook"><div class="cook-hint">${escapeHtml(t('cb_cookhint'))}</div><div class="track"><div class="zone" style="left:${zoneX}%;width:${zoneW}%"></div><div class="marker" id="cb-marker"><span class="fl">${cbIcon('flame')}</span></div></div></div>`;
     const btn = cbEl('cb-do'); if (btn) { btn.className = 'craft-btn ready cookbtn'; btn.innerHTML = cbIcon('flame') + escapeHtml(t('cb_stop')); }
-    cbCook = { zoneX, zoneW, pos: Math.random() * 30, dir: 1, speed: 1.15, raf: 0 };
+    cbCook = { zoneX, zoneW, pos: Math.random() * 30, dir: 1, speed: 1.1 - lv * 0.06, raf: 0, margin: 12 + lv * 2 };   // 1.04 … 0.80; good margin 14 … 22
     const marker = cbEl('cb-marker'); let last = performance.now();
     function step(tm) { const dt = Math.min(3, (tm - last) / 16.7); last = tm; cbCook.pos += cbCook.dir * cbCook.speed * dt; if (cbCook.pos >= 100) { cbCook.pos = 100; cbCook.dir = -1; } if (cbCook.pos <= 0) { cbCook.pos = 0; cbCook.dir = 1; } if (marker) marker.style.left = cbCook.pos + '%'; cbCook.raf = requestAnimationFrame(step); }
     cbCook.raf = requestAnimationFrame(step);
-    const stop = () => { if (!cbCook) return; cancelAnimationFrame(cbCook.raf); window.removeEventListener('keydown', cbKeyH); const center = cbCook.zoneX + cbCook.zoneW / 2, half = cbCook.zoneW / 2, d = Math.abs(cbCook.pos - center); const q = d <= half ? 'perfect' : (d <= half + 11 ? 'good' : 'bad'); cbCook = null; finishCraft(v, q); };
+    const stop = () => { if (!cbCook) return; cancelAnimationFrame(cbCook.raf); window.removeEventListener('keydown', cbKeyH); const center = cbCook.zoneX + cbCook.zoneW / 2, half = cbCook.zoneW / 2, d = Math.abs(cbCook.pos - center); const q = d <= half ? 'perfect' : (d <= half + cbCook.margin ? 'good' : 'bad'); cbCook = null; finishCraft(v, q); };
     if (btn) btn.onclick = stop;
-    cbKeyH = (e) => { if (e.code === 'Space' || e.code === 'Enter') { e.preventDefault(); stop(); } };
+    cbKeyH = (e) => {
+        if (e.code !== 'Space' && e.code !== 'Enter') return;
+        const tg = e.target; if (tg && (/^(INPUT|TEXTAREA|SELECT)$/.test(tg.tagName) || tg.isContentEditable)) return;   // typing, not stopping the flame
+        if (!document.getElementById('cb-marker')) { cancelAnimationFrame(cbCook && cbCook.raf); window.removeEventListener('keydown', cbKeyH); cbCook = null; benchBusy = false; return; }   // the bench is gone
+        e.preventDefault(); stop();
+    };
     window.addEventListener('keydown', cbKeyH);
 }
 
@@ -1950,7 +2122,7 @@ async function finishCraft(v, q) {
         if (r.kind === 'sharpen') {
             const cur = slot ? (eq ? eq.getGrade(slot) : 0) : (invItem ? (invItem.grade || 1) : 0);
             if ((slot || invItem) && cur === (r.targetGrade - 1)) {
-                const ok = (r.targetGrade === 4) ? ((q !== 'bad') && Math.random() < 0.6) : (q !== 'bad');
+                const ok = (r.targetGrade === 4) ? ((q !== 'bad') && Math.random() < Math.min(0.85, 0.45 + (v.skill.level || 1) * 0.08)) : (q !== 'bad');   // Legendary: 53% at level 1 … 85% at 5
                 if (ok) {
                     let ng = cur + 1;
                     if (slot && eq) ng = eq.sharpen(slot);
@@ -1959,7 +2131,7 @@ async function finishCraft(v, q) {
                 } else { producedName = t('sharpen_fail'); addSkillXp(v, 3); benchCraftedQ = 'bad'; }
             } else { producedName = t('sharpen_fail'); benchCraftedQ = 'bad'; }
         } else { // repair → restore durability (fully on a good run, partial on a bad one)
-            const amt = (q === 'bad') ? 55 : 100;
+            const amt = Math.min(100, withBonus((q === 'bad') ? 55 : 100, 'repair'));
             if (slot && eq) { eq.repair(slot, amt); producedName = t('repair_ok'); addSkillXp(v, 6); benchCraftedQ = q === 'bad' ? 'good' : 'perfect'; }
             else if (invItem && inv) { const mx = invItem.max || 100; inv.update(invItem.id, { dur: Math.min(mx, (invItem.dur || 0) + Math.round(mx * amt / 100)), broken: false }); producedName = t('repair_ok'); addSkillXp(v, 6); benchCraftedQ = q === 'bad' ? 'good' : 'perfect'; }
             else { producedName = t('repair_fail'); benchCraftedQ = 'bad'; }
@@ -2023,6 +2195,7 @@ const VI = {
 function ic(n, w) { return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${w || 1.7}" stroke-linecap="round" stroke-linejoin="round">${VI[n] || VI.person}</svg>`; }
 const TYPE_SVG = { blacksmith:'hammer', tailor:'scissors', apothecary:'mortar', cook:'utensils', merchant:'store', jeweler:'gem', trainer:'person', other:'person' };
 function vIcon(v) { return ic(TYPE_SVG[v && v.type] || 'person'); }
+function goodTypeLabel(ty) { const k = 'gt_' + String(ty || 'misc').toLowerCase(); return I18N.en[k] !== undefined ? t(k) : String(ty || t('gt_misc')); }
 function useTagOf(ty) { return /(food|consum|potion|drink|elixir|еда|расход|зель|напит)/i.test(ty || ''); }
 
 // ============================ UI plumbing ============================
@@ -2064,8 +2237,9 @@ function renderButton() {
             </div>`);
         // Delegated + namespaced: a direct element binding here used to be stripped
         // by sibling extensions doing a blanket $('.rpg-modal-close').off('click').
-        $(document).off('click.rpgVndClose').on('click.rpgVndClose', '#rpg-vnd-modal .rpg-modal-close', () => $('#rpg-vnd-modal').removeClass('visible'));
+        $(document).off('click.rpgVndClose').on('click.rpgVndClose', '#rpg-vnd-modal .rpg-modal-close', () => vndClose());
         window.addEventListener('resize', () => { if ($('#rpg-vnd-modal').hasClass('visible')) fitPanel(); });
+        document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && $('#rpg-vnd-modal').hasClass('visible') && !document.getElementById('rpg-vnd-mini') && !document.getElementById('rpg-angel')) vndClose(); });
     }
     if (!settings.enabled) { $('#rpg-vnd-btn').hide(); return; }
     $('#rpg-vnd-btn').show();
@@ -2073,7 +2247,7 @@ function renderButton() {
         view = 'list'; renderPanel();
         const m = document.getElementById('rpg-vnd-modal');
         if (m && !m.classList.contains('visible')) m.style.animation = '';
-        $('#rpg-vnd-modal').toggleClass('visible');
+        if ($('#rpg-vnd-modal').hasClass('visible')) vndClose(); else $('#rpg-vnd-modal').addClass('visible');
     });
 }
 
@@ -2388,7 +2562,7 @@ function renderPanel() {
             </div>
             <div class="vnf-stage"></div>
         </div></div>`);
-        body.find('#vnf-close').off('click').on('click', () => $('#rpg-vnd-modal').removeClass('visible'));
+        body.find('#vnf-close').off('click').on('click', () => vndClose());
         const dragEl = body.find('.vnf-top')[0];
         if (dragEl) makeModalDraggable(document.getElementById('rpg-vnd-modal'), dragEl);
     }
@@ -2492,7 +2666,7 @@ function dossierStage() {
         <div class="vnf-crumb">
           <button class="vnf-btn b-paper" id="v-back">${ic('back')}${escapeHtml(t('back'))}</button>
           <button class="vnf-btn b-ghost" id="v-edit">${ic('edit')}${escapeHtml(t('edit'))}</button>
-          <button class="vnf-btn b-red" id="v-del">${ic('trash')}${escapeHtml(t('del'))}</button>
+          <button class="vnf-btn b-red" id="v-del">${ic('trash')}<span class="lab-del">${escapeHtml(t('del'))}</span></button>
           <button class="vnf-btn b-ghost" id="v-leave">${ic('leave')}${escapeHtml(t('leave'))}</button>
         </div>
         <div class="vnf-tabs">${tabs.map(tb => `<button class="vnf-tab ${tab === tb[0] ? 'active' : ''}" data-t="${tb[0]}">${ic(tb[2])}<span class="lab">${escapeHtml(tb[1])}</span></button>`).join('')}</div>
@@ -2509,24 +2683,26 @@ function tabHtml(v) {
     let h = vHead(v);
 
     if (tab === 'profile') {
-        h += `<div class="vnf-quote">${escapeHtml(v.desc || t('q_none'))}</div>
-            <div class="vnf-field"><b>${escapeHtml(t('type_label'))}:</b> ${escapeHtml(vendorRole(v))}</div>
+        h += `${v.desc ? `<div class="vnf-quote">${escapeHtml(v.desc)}</div>` : ''}
+            <div class="vnf-field"><b>${escapeHtml(t('type_label'))}</b> ${escapeHtml(vendorRole(v))}</div>
             ${v.customDomain ? `<div class="vnf-field"><b>${escapeHtml(t('trade_lbl'))}</b> ${escapeHtml(v.customDomain)}</div>` : ''}
             <div style="margin-top:14px"><button class="vnf-btn b-violet vnf-askwork" style="width:100%">${ic('wand')}${escapeHtml(t('q_get'))}</button></div>`;
     }
     else if (tab === 'shop') {
         const coins = inv ? inv.getCoins() : 0;
         h += `<div class="vnf-shopbar"><span class="vnf-coins">${ic('coin')} ${coins}</span>
-            <button class="vnf-btn b-violet vnf-restock" style="padding:7px 12px;font-size:13px">${ic('refresh')}${escapeHtml(t('restock'))}</button></div>`;
+            ${shopWait(v) > 0 ? `<span class="vnf-wait">${escapeHtml(t('restock_in', { n: shopWait(v) }))}</span>` : `<button class="vnf-btn b-violet vnf-restock" style="padding:7px 12px;font-size:13px">${ic('refresh')}${escapeHtml(t('restock'))}</button>`}</div>`;
         const stock = v.stock || [];
         h += stock.length ? `<div class="vnf-shopgrid">` + stock.map(g => {
             const u = useTagOf(g.type);
-            return `<div class="vnf-scard ${u ? 'use' : ''}">
-                <div class="tagline"><span class="vnf-pill ${u ? 'use' : ''}">${escapeHtml(g.type || 'misc')}</span></div>
+            const lim = settings.shopLimited && typeof g.qty === 'number';
+            const out = lim && g.qty <= 0;
+            return `<div class="vnf-scard ${u ? 'use' : ''}${out ? ' sold' : ''}">
+                <div class="tagline"><span class="vnf-pill ${u ? 'use' : ''}">${escapeHtml(goodTypeLabel(g.type))}</span></div>
                 <div class="nm"><span class="mark">${escapeHtml(g.name)}</span></div>
                 ${g.desc ? `<div class="ds">${escapeHtml(g.desc)}</div>` : ''}
-                <div class="foot"><span class="price">${ic('coin')} ${g.price}</span>
-                <button class="vnf-btn b-navy buy vnf-buy" data-id="${escapeHtml(g.id)}">${ic('cart')}${escapeHtml(t('buy'))}</button></div>
+                <div class="foot"><span class="price">${ic('coin')} ${shopPrice(g) < g.price ? `<s class="vnf-oldprice">${g.price}</s> ` : ''}${shopPrice(g)}</span>${lim && !out ? `<span class="vnf-qty">${escapeHtml(t('left_n', { n: g.qty }))}</span>` : ''}
+                ${out ? `<span class="vnf-sold">${escapeHtml(t('sold_out'))}</span>` : `<button class="vnf-btn b-navy buy vnf-buy" data-id="${escapeHtml(g.id)}">${ic('cart')}${escapeHtml(t('buy'))}</button>`}</div>
             </div>`;
         }).join('') + `</div>` : `<div class="vnf-empty">${escapeHtml(t('no_goods'))}</div>`;
         h += `<div class="vnf-shopfoot">`;
@@ -2534,7 +2710,7 @@ function tabHtml(v) {
             const items = inv.list();
             if (items.length) {
                 h += `<div class="vnf-footrow"><span class="lbl">${escapeHtml(t('sell_label'))}</span></div>
-                    <div class="vnf-footrow"><select class="vnf-sel vnf-sell-sel" style="flex:1"><option value="">—</option>${items.map(i => `<option value="${i.id}">${escapeHtml(i.name)}</option>`).join('')}</select>
+                    <div class="vnf-footrow"><select class="vnf-sel vnf-sell-sel" style="flex:1"><option value="">—</option>${items.map(i => `<option value="${escapeHtml(i.id)}">${escapeHtml(i.name)}</option>`).join('')}</select>
                     <button class="vnf-btn b-paper vnf-sell">${ic('sell')}${escapeHtml(t('sell'))}</button></div>`;
             }
             h += `<div class="vnf-footrow"><span class="lbl">${escapeHtml(t('give_label', { vendor: v.name }))}</span></div>
@@ -2585,7 +2761,7 @@ function tabHtml(v) {
                 const mats = inv.list();
                 if (!mats.length) h += `<div class="vnf-empty">${escapeHtml(t('no_items'))}</div>`;
                 else {
-                    const itemOpts = `<option value="">—</option>` + mats.map(i => `<option value="${i.id}" ${selItemId === i.id ? 'selected' : ''}>${escapeHtml(i.name)}</option>`).join('');
+                    const itemOpts = `<option value="">—</option>` + mats.map(i => `<option value="${escapeHtml(i.id)}" ${selItemId === i.id ? 'selected' : ''}>${escapeHtml(i.name)}</option>`).join('');
                     h += `<div class="vnf-footrow"><span class="lbl">${escapeHtml(t('item_label'))}</span></div>
                         <div class="vnf-footrow"><select class="vnf-sel vnf-sel-item">${itemOpts}</select></div>
                         <div class="vnf-footrow"><button class="vnf-btn b-navy vnf-offer" style="width:100%">${ic('wrench')}${escapeHtml(t('offer'))}</button></div>`;
@@ -2660,7 +2836,15 @@ function wireDossier(body) {
     body.find('#v-back').off('click').on('click', () => { view = 'list'; renderPanel(); });
     body.find('#v-leave').off('click').on('click', () => { setActive(null); view = 'list'; renderPanel(); });
     body.find('#v-edit').off('click').on('click', () => { formVendor = v; view = 'form'; renderPanel(); });
-    body.find('#v-del').off('click').on('click', () => { deleteVendor(v.id); view = 'list'; renderPanel(); });
+    body.find('#v-del').off('click').on('click', function () {
+        const b = $(this);
+        if (!b.hasClass('sure')) {   // the first click asks, the second deletes; it calms down by itself
+            b.addClass('sure').find('span.lab-del').text(t('del_sure'));
+            clearTimeout(b.data('t')); b.data('t', setTimeout(() => { b.removeClass('sure').find('span.lab-del').text(t('del')); }, 3000));
+            return;
+        }
+        deleteVendor(v.id); view = 'list'; renderPanel();
+    });
     body.find('.vnf-tab').off('click').on('click', function () {
         tab = $(this).data('t');
         body.find('.vnf-tab').removeClass('active');
@@ -2797,6 +2981,8 @@ function settingsHtml() {
             <label class="checkbox_label"><input type="checkbox" id="rpg-vnd-cardinject"> ${t('set_cardinject')}</label>
             <label class="checkbox_label"><input type="checkbox" id="rpg-vnd-questglobal"> ${t('set_questglobal')}</label>
             <label class="checkbox_label"><input type="checkbox" id="rpg-vnd-needpresence"> ${t('set_needpresence')}</label>
+            <div class="flex-container alignitemscenter flexgap5"><label class="checkbox_label" style="margin:0"><input type="checkbox" id="rpg-vnd-shoplimit"> ${t('set_shoplimit')}</label>
+                <input type="number" id="rpg-vnd-shopevery" class="text_pole" min="1" max="500" style="width:60px;"> <span>${t('set_shopevery')}</span></div>
         </div>
     </div>
 </div>`;
@@ -2851,6 +3037,7 @@ function setupUI() {
         $('.rpg-vnd-settings .inline-drawer-content').show();
         $('.rpg-vnd-settings .inline-drawer-icon').removeClass('down').addClass('up');
         $('#rpg-vnd-btn').attr('title', t('btn_title')); $('#rpg-vnd-title').text(t('panel_title'));
+        $('#rpg-vnd-body').empty();   // the shell (title, card-file tab) is built once: rebuild it in the new language
         refreshPanel(); buildInjection();
     });
     $('#rpg-vnd-base').val(settings.baseUrl).on('change', function () { settings.baseUrl = $(this).val(); saveSettings(); });
@@ -2865,8 +3052,18 @@ function setupUI() {
     $('#rpg-vnd-reqai').prop('checked', !!settings.requireAiCheck).on('change', function () { settings.requireAiCheck = this.checked; saveSettings(); });
     $('#rpg-vnd-cardinject').prop('checked', settings.cardInject !== false).on('change', function () { settings.cardInject = this.checked; saveSettings(); buildInjection(); buildCardInjection(); });
     $('#rpg-vnd-questglobal').prop('checked', settings.questGlobal !== false).on('change', function () { settings.questGlobal = this.checked; saveSettings(); buildInjection(); });
+    $('#rpg-vnd-shoplimit').prop('checked', !!settings.shopLimited).on('change', function () { settings.shopLimited = this.checked; saveSettings(); refreshPanel(); });
+    $('#rpg-vnd-shopevery').val(settings.shopEvery || 20).on('change', function () { settings.shopEvery = Math.min(500, Math.max(1, parseInt($(this).val()) || 20)); $(this).val(settings.shopEvery); saveSettings(); refreshPanel(); });
     $('#rpg-vnd-needpresence').prop('checked', !!settings.questsNeedPresence).on('change', function () { settings.questsNeedPresence = this.checked; saveSettings(); refreshPanel(); });
 }
+
+// read-only, for RPG Vitals (the crafts beside the tree) and RPG Equipment (repair bonus)
+window.RPG = window.RPG || {};
+window.RPG.crafts = {
+    available: true,
+    list: () => { try { if (!settings.enabled) return []; syncChat(); return craftList().map(c => ({ ...c })); } catch (e) { return []; } },
+    bonus: (kind) => { try { if (!settings.enabled) return 0; syncChat(); return craftBonus(String(kind)); } catch (e) { return 0; } }
+};
 
 async function maybeDropBrokenGear() {
     if (!settings.enabled) return;
