@@ -189,7 +189,9 @@
 
 /* index / rolodex */
 #rpg-vnd-body .vnf-idxtop { display:flex; gap:8px; align-items:center; margin:14px 0 6px; flex-wrap:wrap; }
-#rpg-vnd-body .vnf-idxtop .vnf-sel { flex:1; min-width:120px; }
+/* the kind of vendor to make: its own line, so "Auto (AI picks type)" is read whole; the two buttons share the line below */
+#rpg-vnd-body .vnf-idxtop .vnf-sel { flex:1 1 100%; order:-1; min-width:0; }
+#rpg-vnd-body .vnf-idxtop .vnf-btn { flex:1 1 0; justify-content:center; }
 #rpg-vnd-body .vnf-emptybig { text-align:center; font-style:italic; color:var(--sepia); padding:48px 12px; font-size:15px; }
 #rpg-vnd-body .vnf-rolo { position:relative; height:362px; margin-top:6px; display:flex; align-items:center; justify-content:center; overflow:visible; }
 #rpg-vnd-body .vnf-nav { position:absolute; top:50%; transform:translateY(-50%); width:30px; height:46px; border:1px solid var(--edge); border-radius:8px; background:#f3ead2; color:var(--sepia); cursor:pointer; display:grid; place-items:center; z-index:20; transition:.14s; }
